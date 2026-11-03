@@ -1,33 +1,154 @@
-"""FastAPI server: starts outbound Twilio calls and hosts the media-stream WebSocket.
+"""FastAPI server: dashboard, browser test sessions, and Twilio phone calls.
 
 Run:  uv run uvicorn server:app --port 8765
+Then open http://localhost:8765
 """
 
 import os
 import secrets
+from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import urlencode
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, WebSocket
+from fastapi.responses import FileResponse
 from loguru import logger
 from pipecat.runner.utils import parse_telephony_websocket
+from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 from pydantic import BaseModel, Field
 from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
-from bot import run_vendor_call
-from prompts import LANGUAGE_NAMES
+import browser
+import catalog
+import prompts
+import rules
+import store
+import workflow
+from bot import run_phone_call
+from conversation import SessionConfig
 
-load_dotenv(override=True)
+# Values already in the environment win, so a run can override e.g. GROQ_MODEL=... uv run uvicorn ...
+load_dotenv(Path(__file__).parent / ".env")
 
-app = FastAPI(title="Bandobast")
+STATIC = Path(__file__).parent / "static"
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    await browser.close()
+
+
+app = FastAPI(title="Bandobast", lifespan=lifespan)
+
+
+def local_only(request: Request) -> None:
+    """Dashboard and browser sessions spend API credits: refuse anything coming through the tunnel."""
+    proxied = any(h in request.headers for h in ("cf-connecting-ip", "x-forwarded-for"))
+    if proxied or (request.client and request.client.host not in ("127.0.0.1", "::1", "localhost")):
+        raise HTTPException(403, "The dashboard is only available on localhost")
+
+
+# Dashboard + browser testing (localhost only)
+
+app.include_router(browser.router, dependencies=[Depends(local_only)])
+app.mount("/client", SmallWebRTCPrebuiltUI)
+
+
+@app.get("/", dependencies=[Depends(local_only)])
+async def dashboard():
+    return FileResponse(STATIC / "dashboard.html")
+
+
+@app.get("/api/state", dependencies=[Depends(local_only)])
+async def state():
+    vendors = store.vendors()
+    names = {
+        "categories": {k: c["name"] for k, c in catalog.CATEGORIES.items()},
+        "functions": {k: f["name"] for k, f in catalog.FUNCTIONS.items()},
+    }
+    event = store.current_event()
+    if not event:
+        return {"event": None, "vendors": vendors, "names": names}
+    event_id, brief = event
+    return {
+        "event": {"id": event_id, "brief": brief, "label": catalog.function_label(brief)},
+        "vendors": vendors,
+        "names": names,
+        "comparison": workflow.comparison(event_id, brief),
+        "bookings": store.bookings(event_id),
+        "checkins": store.checkins(event_id),
+        "alerts": store.alerts(event_id),
+        "calls": store.calls(event_id),
+    }
+
+
+class BrowserSession(BaseModel):
+    mode: str
+    vendor_id: str | None = None
+    checkin_id: int | None = None
+
+
+@app.post("/api/browser-session", dependencies=[Depends(local_only)])
+async def browser_session(req: BrowserSession):
+    try:
+        if req.mode != "intake":
+            workflow.require_event()
+        if req.mode == "vendor_call":
+            store.vendor(req.vendor_id or "")
+        if req.mode == "checkin":
+            store.checkin(req.checkin_id or 0)
+        browser.set_next_session(req.model_dump())
+    except (LookupError, KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return {"open": "/client/"}
+
+
+class SampleBrief(BaseModel):
+    kind: str = "griha_pravesh"
+
+
+@app.post("/api/sample-brief", dependencies=[Depends(local_only)])
+async def sample_brief(req: SampleBrief):
+    if req.kind not in prompts.SAMPLE_BRIEFS:
+        raise HTTPException(400, f"Unknown sample {req.kind}")
+    return {"event_id": store.save_event(prompts.SAMPLE_BRIEFS[req.kind])}
+
+
+@app.post("/api/book/{category}", dependencies=[Depends(local_only)])
+async def book(category: str):
+    if category not in rules.CATEGORIES:
+        raise HTTPException(400, f"Unknown category {category}")
+    try:
+        return workflow.book(category)
+    except (LookupError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/checkins/{checkin_id}/unreachable", dependencies=[Depends(local_only)])
+async def checkin_unreachable(checkin_id: int):
+    try:
+        return {"risk": workflow.mark_unreachable(checkin_id)}
+    except (LookupError, KeyError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/reset", dependencies=[Depends(local_only)])
+async def reset():
+    store.reset()
+    return {"ok": True}
+
+
+# Phone calls (Twilio)
 
 
 class CallRequest(BaseModel):
-    to: str = Field(description="Vendor phone number in E.164, e.g. +919876543210")
-    language: str = "hi-IN"
-    vendor_name: str = "Annapurna Caterers"
-    family_name: str = "Sharma"
+    to: str = Field(description="Phone number in E.164, e.g. +919876543210")
+    mode: str = "vendor_call"
+    vendor_id: str | None = "C01"
+    checkin_id: int | None = None
     say_test: bool = False
 
 
@@ -40,19 +161,12 @@ def public_host() -> str:
 
 
 def start_call(req: CallRequest) -> str:
-    """Ask Twilio to dial the vendor; the answered call streams to our /ws. Returns the call SID."""
-    if req.language not in LANGUAGE_NAMES:
-        raise ValueError(f"Unsupported language {req.language!r}; use one of {sorted(LANGUAGE_NAMES)}")
+    """Ask Twilio to dial; the answered call streams to our /ws. Returns the call SID."""
+    session = {"mode": req.mode, "vendor_id": req.vendor_id or "", "checkin_id": req.checkin_id or ""}
+    SessionConfig.from_dict(session, channel="phone")
     host = public_host()
-    # Twilio fetches the call instructions from /twiml when the vendor answers.
-    query = urlencode(
-        {
-            "language": req.language,
-            "vendor_name": req.vendor_name,
-            "family_name": req.family_name,
-            "say_test": int(req.say_test),
-        }
-    )
+    # Twilio fetches the call instructions from /twiml when the call is answered.
+    query = urlencode({**session, "say_test": int(req.say_test)})
 
     extra = {}
     # Trial accounts reject recording and status callbacks, so they're opt-in.
@@ -70,7 +184,7 @@ def start_call(req: CallRequest) -> str:
         url=f"https://{host}/twiml?{query}",
         **extra,
     )
-    logger.info(f"Calling {req.vendor_name} ({req.language}): {call.sid}")
+    logger.info(f"Calling ({req.mode}, vendor {req.vendor_id}): {call.sid}")
     return call.sid
 
 
@@ -82,21 +196,17 @@ async def create_call(req: CallRequest, authorization: str = Header(default=""))
         raise HTTPException(status_code=401, detail="Missing or wrong CONTROL_TOKEN")
     try:
         return {"call_sid": start_call(req)}
-    except ValueError as e:
+    except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.api_route("/twiml", methods=["GET", "POST"])
-async def twiml(
-    language: str = "hi-IN", vendor_name: str = "", family_name: str = "", say_test: int = 0
-):
+async def twiml(mode: str = "vendor_call", vendor_id: str = "", checkin_id: str = "", say_test: int = 0):
     """Call instructions Twilio fetches on answer: stream the call audio to /ws.
 
     With say_test=1, Twilio first speaks a line and pauses, to check that our
     instructions run at all before the stream starts.
     """
-    if language not in LANGUAGE_NAMES:
-        language = "hi-IN"
     response = VoiceResponse()
     if say_test:
         response.say("Namaste. Yeh Bandobast ka test call hai. Ab stream shuru hoga.", language="hi-IN")
@@ -108,9 +218,9 @@ async def twiml(
         status_callback=f"https://{public_host()}/twilio/stream-status",
     )
     # Custom parameters arrive in the stream's "start" message as call_data.body.
-    stream.parameter(name="language", value=language)
-    stream.parameter(name="vendor_name", value=vendor_name)
-    stream.parameter(name="family_name", value=family_name)
+    stream.parameter(name="mode", value=mode)
+    stream.parameter(name="vendor_id", value=vendor_id)
+    stream.parameter(name="checkin_id", value=checkin_id)
     response.append(connect)
     return Response(content=str(response), media_type="application/xml")
 
@@ -144,7 +254,7 @@ async def media_stream(websocket: WebSocket):
         await websocket.close()
         return
     logger.info(f"Call connected: {call_data.call_id} params={call_data.body}")
-    await run_vendor_call(websocket, call_data)
+    await run_phone_call(websocket, call_data)
 
 
 @app.get("/health")

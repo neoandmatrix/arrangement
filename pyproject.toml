@@ -5,7 +5,9 @@ description = "Phone + WhatsApp agent that arranges family functions in another 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiortc>=1.14,<2",
     "fastapi>=0.162.0",
+    "pipecat-ai-small-webrtc-prebuilt>=2.5.0",
     "pipecat-ai[groq,silero,websocket]>=1.15.0",
     "pipecat-gnani>=0.6.0",
     "python-dotenv>=1.2.4",

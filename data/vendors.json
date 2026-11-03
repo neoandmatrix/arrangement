@@ -1,0 +1,338 @@
+[
+  {
+    "id": "P01",
+    "category": "priest",
+    "name": "Pandit Ramakant Sharma",
+    "area": "HSR Layout",
+    "language": "hi-IN",
+    "rating": 4.8,
+    "review_count": 212,
+    "phone": "+910000000101",
+    "reviews": [
+      "Did the griha pravesh puja exactly as per North Indian vidhi, explained every step in Hindi.",
+      "Came on time and brought all samagri."
+    ]
+  },
+  {
+    "id": "P02",
+    "category": "priest",
+    "name": "Pandit Venkatesh Bhat",
+    "area": "Jayanagar",
+    "language": "kn-IN",
+    "rating": 4.6,
+    "review_count": 158,
+    "phone": "+910000000102",
+    "reviews": [
+      "Very knowledgeable, performs puja in Kannada and Sanskrit.",
+      "Good, but arrived 40 minutes late because of another booking."
+    ]
+  },
+  {
+    "id": "P03",
+    "category": "priest",
+    "name": "Pandit Suresh Tiwari",
+    "area": "Marathahalli",
+    "language": "hi-IN",
+    "rating": 4.2,
+    "review_count": 64,
+    "phone": "+910000000103",
+    "reviews": [
+      "Puja was fine but dakshina changed on the day, asked for more than agreed.",
+      "Speaks Hindi and Bhojpuri, good for North Indian families."
+    ]
+  },
+  {
+    "id": "P04",
+    "category": "priest",
+    "name": "Sri Raghavendra Acharya",
+    "area": "Malleshwaram",
+    "language": "kn-IN",
+    "rating": 4.9,
+    "review_count": 301,
+    "phone": "+910000000104",
+    "reviews": [
+      "Punctual and very organised. Busy in wedding season, book early.",
+      "Performed vastu shanti and griha pravesh together."
+    ]
+  },
+  {
+    "id": "P05",
+    "category": "priest",
+    "name": "Pandit Srinivasa Sastry",
+    "area": "Whitefield",
+    "language": "te-IN",
+    "rating": 4.5,
+    "review_count": 97,
+    "phone": "+910000000105",
+    "reviews": [
+      "Telugu and Sanskrit, very patient with the family.",
+      "Did not show up once, sent a junior pandit without telling us."
+    ]
+  },
+  {
+    "id": "C01",
+    "category": "caterer",
+    "name": "Annapurna Caterers",
+    "area": "BTM Layout",
+    "language": "kn-IN",
+    "rating": 4.4,
+    "review_count": 389,
+    "phone": "+910000000201",
+    "reviews": [
+      "Tasty North and South Indian veg food, staff was polite.",
+      "Food arrived 2 hours late for our pooja, guests waited."
+    ]
+  },
+  {
+    "id": "C02",
+    "category": "caterer",
+    "name": "Shree Krishna Bhojanalaya Caterers",
+    "area": "Koramangala",
+    "language": "hi-IN",
+    "rating": 4.7,
+    "review_count": 276,
+    "phone": "+910000000202",
+    "reviews": [
+      "Best Rajasthani and North Indian thali in Bengaluru, always on time.",
+      "Transport and serving staff charged extra, mention it upfront."
+    ]
+  },
+  {
+    "id": "C03",
+    "category": "caterer",
+    "name": "Udupi Ruchi Catering",
+    "area": "Basavanagudi",
+    "language": "kn-IN",
+    "rating": 4.6,
+    "review_count": 512,
+    "phone": "+910000000203",
+    "reviews": [
+      "Authentic Udupi food on banana leaf, very reliable.",
+      "Mostly South Indian, limited North Indian items."
+    ]
+  },
+  {
+    "id": "C04",
+    "category": "caterer",
+    "name": "Royal Feast Events and Catering",
+    "area": "Indiranagar",
+    "language": "en-IN",
+    "rating": 4.1,
+    "review_count": 88,
+    "phone": "+910000000204",
+    "reviews": [
+      "Cancelled the night before our function, had to order from a restaurant.",
+      "Good presentation, a bit expensive."
+    ]
+  },
+  {
+    "id": "C05",
+    "category": "caterer",
+    "name": "Andhra Spice Caterers",
+    "area": "Electronic City",
+    "language": "te-IN",
+    "rating": 4.3,
+    "review_count": 143,
+    "phone": "+910000000205",
+    "reviews": [
+      "Spicy Andhra meals, can make North Indian on request.",
+      "Price per plate was raised after we confirmed the count."
+    ]
+  },
+  {
+    "id": "C06",
+    "category": "caterer",
+    "name": "Punjabi Rasoi Home Catering",
+    "area": "HSR Layout",
+    "language": "hi-IN",
+    "rating": 4.5,
+    "review_count": 61,
+    "phone": "+910000000206",
+    "reviews": [
+      "Home-style Punjabi food, small orders welcome.",
+      "Owner answers calls himself, very responsive."
+    ]
+  },
+  {
+    "id": "D01",
+    "category": "decorator",
+    "name": "Mallige Flower Decorators",
+    "area": "KR Market",
+    "language": "kn-IN",
+    "rating": 4.6,
+    "review_count": 204,
+    "phone": "+910000000301",
+    "reviews": [
+      "Beautiful marigold and mango leaf toran, fresh flowers.",
+      "Setup started late but finished before the muhurat."
+    ]
+  },
+  {
+    "id": "D02",
+    "category": "decorator",
+    "name": "Shubh Mangal Tent and Decor",
+    "area": "Yelahanka",
+    "language": "hi-IN",
+    "rating": 4.0,
+    "review_count": 55,
+    "phone": "+910000000302",
+    "reviews": [
+      "Tent and chairs fine, flowers were extra and not told before.",
+      "Team did not come on the decided time."
+    ]
+  },
+  {
+    "id": "D03",
+    "category": "decorator",
+    "name": "Rangoli Events",
+    "area": "JP Nagar",
+    "language": "kn-IN",
+    "rating": 4.7,
+    "review_count": 167,
+    "phone": "+910000000303",
+    "reviews": [
+      "Lovely rangoli and flower decor for house warming.",
+      "Clear pricing, no surprises."
+    ]
+  },
+  {
+    "id": "D04",
+    "category": "decorator",
+    "name": "Swagat Decor Studio",
+    "area": "Hebbal",
+    "language": "en-IN",
+    "rating": 4.4,
+    "review_count": 92,
+    "phone": "+910000000304",
+    "reviews": [
+      "Modern decor, good for small functions.",
+      "Asked for full payment in advance."
+    ]
+  },
+  {
+    "id": "K01",
+    "category": "cake",
+    "name": "Sweet Tooth Bakers",
+    "area": "HSR Layout",
+    "language": "kn-IN",
+    "rating": 4.7,
+    "review_count": 186,
+    "phone": "+910000000401",
+    "reviews": [
+      "Eggless cakes taste great, delivered on time for our naamkaran.",
+      "Custom cradle design was lovely."
+    ]
+  },
+  {
+    "id": "K02",
+    "category": "cake",
+    "name": "Bake Ghar",
+    "area": "Koramangala",
+    "language": "hi-IN",
+    "rating": 4.4,
+    "review_count": 92,
+    "phone": "+910000000402",
+    "reviews": [
+      "Good butterscotch cake, polite on the phone.",
+      "Delivered 2 hours late, the guests had already left."
+    ]
+  },
+  {
+    "id": "K03",
+    "category": "cake",
+    "name": "Iyengar's Oven Fresh",
+    "area": "Jayanagar",
+    "language": "kn-IN",
+    "rating": 4.6,
+    "review_count": 340,
+    "phone": "+910000000403",
+    "reviews": [
+      "Classic eggless cakes, fair price.",
+      "Busy on weekends, order three days ahead."
+    ]
+  },
+  {
+    "id": "F01",
+    "category": "photographer",
+    "name": "Lens and Light Studio",
+    "area": "Indiranagar",
+    "language": "en-IN",
+    "rating": 4.8,
+    "review_count": 128,
+    "phone": "+910000000501",
+    "reviews": [
+      "Captured every ritual of the griha pravesh, album in ten days.",
+      "Candid shots were beautiful."
+    ]
+  },
+  {
+    "id": "F02",
+    "category": "photographer",
+    "name": "Ravi Photography",
+    "area": "BTM Layout",
+    "language": "te-IN",
+    "rating": 4.3,
+    "review_count": 74,
+    "phone": "+910000000502",
+    "reviews": [
+      "Nice photos but did not show up for the second day.",
+      "Video editing took a month."
+    ]
+  },
+  {
+    "id": "F03",
+    "category": "photographer",
+    "name": "Moments by Meera",
+    "area": "HSR Layout",
+    "language": "hi-IN",
+    "rating": 4.6,
+    "review_count": 59,
+    "phone": "+910000000503",
+    "reviews": [
+      "Speaks Hindi, great with kids at our mundan.",
+      "Delivered photos within a week."
+    ]
+  },
+  {
+    "id": "T01",
+    "category": "tent_sound",
+    "name": "Shree Lakshmi Tent House",
+    "area": "Bommanahalli",
+    "language": "kn-IN",
+    "rating": 4.5,
+    "review_count": 210,
+    "phone": "+910000000601",
+    "reviews": [
+      "Shamiana and chairs set up early, sound was clear.",
+      "Removed everything the same evening."
+    ]
+  },
+  {
+    "id": "T02",
+    "category": "tent_sound",
+    "name": "Royal Shamiana and Sound",
+    "area": "Electronic City",
+    "language": "hi-IN",
+    "rating": 4.1,
+    "review_count": 88,
+    "phone": "+910000000602",
+    "reviews": [
+      "Cheap, but the transport charge was raised after booking.",
+      "Mic stopped working during the puja."
+    ]
+  },
+  {
+    "id": "T03",
+    "category": "tent_sound",
+    "name": "Ganesh Tent and Lights",
+    "area": "Bellandur",
+    "language": "ta-IN",
+    "rating": 4.4,
+    "review_count": 131,
+    "phone": "+910000000603",
+    "reviews": [
+      "Good tent for 100 guests, helpful team.",
+      "Speaks Tamil and some Kannada."
+    ]
+  }
+]

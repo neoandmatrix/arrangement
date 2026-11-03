@@ -12,3 +12,8 @@ wheels/
 # Secrets and call artifacts
 .env
 calls/
+
+# Local database
+bandobast.db
+.sim_cache/
+DEVELOPMENT.md

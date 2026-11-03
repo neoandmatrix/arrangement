@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bandobast</title>
+<style>
+  :root {
+    --bg: #faf7f2; --card: #ffffff; --ink: #1f1d1a; --muted: #6b665e; --line: #e7e1d7;
+    --accent: #b5481d; --ok: #2f7d4f; --warn: #a36a00; --bad: #b42318; --chip: #f3eee6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #171512; --card: #211e1a; --ink: #f1ece4; --muted: #a39d93; --line: #35312b;
+            --accent: #e0703f; --ok: #5cbf86; --warn: #e2a33a; --bad: #f07067; --chip: #2b2722; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 20px; margin: 0; } header .sub { color: var(--muted); flex: 1; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px 20px 60px; display: grid; gap: 16px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  h2 { font-size: 16px; margin: 0 0 10px; } h3 { font-size: 14px; margin: 12px 0 6px; color: var(--muted); }
+  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+           border-radius: 7px; padding: 5px 10px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; }
+  .muted { color: var(--muted); } .small { font-size: 13px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin: 1px 2px 1px 0; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .flag { display: block; font-size: 12px; } .flag.block { color: var(--bad); } .flag.warn { color: var(--warn); } .flag.info { color: var(--muted); }
+  .alert { padding: 6px 10px; border-left: 3px solid var(--muted); margin: 4px 0; background: var(--chip); border-radius: 4px; }
+  .alert.warn { border-color: var(--warn); } .alert.critical { border-color: var(--bad); }
+  details summary { cursor: pointer; } .transcript p { margin: 3px 0; } .who { font-weight: 600; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .vendor { padding: 8px 0; border-bottom: 1px solid var(--line); } .vendor:last-child { border-bottom: 0; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+           padding: 8px 14px; border-radius: 8px; display: none; max-width: 90vw; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bandobast</h1><span class="sub">Browser test mode · you play the family or the vendor</span>
+  <button id="reset">Reset demo</button>
+</header>
+<main>
+  <section id="event"></section>
+  <section id="alerts-sec" hidden><h2>Alerts for the family</h2><div id="alerts"></div></section>
+  <div class="grid3" id="categories"></div>
+  <section id="checkins-sec" hidden><h2>Follow-up schedule</h2><div id="checkins"></div></section>
+  <section id="calls-sec" hidden><h2>Calls</h2><div id="calls"></div></section>
+</main>
+<div id="toast"></div>
+<script>
+let CAT = {};  // category key -> name, from the server's catalog
+const LANG = { "hi-IN": "Hindi", "kn-IN": "Kannada", "te-IN": "Telugu", "ta-IN": "Tamil", "en-IN": "English",
+  "mr-IN": "Marathi", "bn-IN": "Bengali", "gu-IN": "Gujarati", "ml-IN": "Malayalam", "pa-IN": "Punjabi" };
+let S = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const rupees = (n) => (n == null ? "—" : "₹" + Number(n).toLocaleString("en-IN"));
+const vendorById = (id) => S.vendors.find((v) => v.id === id);
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => (t.style.display = "none"), 3500); }
+
+async function api(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+
+async function talk(session, who) {
+  try {
+    await api("/api/browser-session", session);
+    window.open("/client/", "_blank");
+    toast(`New tab opened: click Connect and speak as ${who}.`);
+  } catch (e) { toast(e.message); }
+}
+
+function renderEvent() {
+  if (!S.event) {
+    $("event").innerHTML = `<h2>1 · The function</h2>
+      <p class="muted">Start by telling Bandobast about the function, in Hindi, as the family. Or skip ahead with a sample brief.</p>
+      <div class="row"><button class="primary" id="intake">Talk as the family (intake)</button>
+      <button data-sample="griha_pravesh">Sample: griha pravesh</button>
+      <button data-sample="naamkaran">Sample: naamkaran (all six vendors)</button></div>`;
+    $("intake").onclick = () => talk({ mode: "intake" }, "the family");
+    document.querySelectorAll("[data-sample]").forEach((b) => (b.onclick = async () => { await api("/api/sample-brief", { kind: b.dataset.sample }); refresh(); }));
+    return;
+  }
+  const b = S.event.brief, budget = b.budget || {}, details = b.details || {};
+  const fn = S.names.functions[b.function_type];
+  $("event").innerHTML = `<h2>1 · The function</h2>
+    <div class="row"><strong>${esc(S.event.label)}</strong>${fn && fn !== S.event.label ? `<span class="chip">${esc(fn)}</span>` : ""} · ${esc(b.family_name)} family · ${esc(b.area)}, ${esc(b.city)}</div>
+    <div class="row small muted">${esc(b.date)} · muhurat ${esc(b.start_time)} · ${esc(b.guests)} guests</div>
+    <div class="small">Food: ${esc(b.cuisine)}<br>Rituals: ${esc(b.rituals)}</div>
+    <div class="small">Needs: ${(b.needs || []).map((k) => `<span class="chip">${esc(CAT[k] || k)}</span>`).join("")}</div>
+    ${Object.entries(details).map(([k, v]) => `<div class="small">${esc(CAT[k] || k)}: ${esc(v)}</div>`).join("")}
+    <div class="small muted">Budget: ${Object.entries(budget).map(([k, v]) => `${esc(CAT[k] || k)} ${rupees(v)}`).join(" · ") || "not given"}</div>`;
+}
+
+function renderAlerts() {
+  const a = S.alerts || [];
+  $("alerts-sec").hidden = !a.length;
+  $("alerts").innerHTML = a.map((x) => `<div class="alert ${x.level}"><span class="small muted">${esc(x.created_at.slice(11, 16))}</span> ${esc(x.message)}</div>`).join("");
+}
+
+function renderCategories() {
+  if (!S.event) { $("categories").innerHTML = ""; return; }
+  const needs = (S.event.brief.needs || Object.keys(CAT)).filter((c) => S.comparison[c]);
+  $("categories").innerHTML = needs.map((cat) => {
+    const cmp = S.comparison[cat];
+    const booked = S.bookings.filter((b) => b.category === cat);
+    const quoted = new Set(cmp.ranked.map((r) => r.vendor_id));
+    const vendors = S.vendors.filter((v) => v.category === cat);
+    const ranked = cmp.ranked.map((r, i) => `<tr>
+        <td>${i + 1}</td><td>${esc(r.vendor_name)}${r.vendor_id === cmp.top ? ' <span class="chip ok">top</span>' : ""}${r.vendor_id === cmp.backup ? ' <span class="chip">backup</span>' : ""}</td>
+        <td>${rupees(r.landed_cost)}</td>
+        <td>${r.flags.map((f) => `<span class="flag ${f.level}">${esc(f.text)}</span>`).join("") || '<span class="flag info">No issues</span>'}</td></tr>`).join("");
+    const bookingRows = booked.map((b) => `<div class="small"><span class="chip">${b.role}</span> ${esc(vendorById(b.vendor_id)?.name)} — <span class="${b.status === "replaced" ? "bad" : b.status === "active" ? "ok" : "muted"}">${b.status}</span></div>`).join("");
+    return `<section><h2>2 · ${CAT[cat]}</h2>
+      ${vendors.map((v) => `<div class="vendor">
+        <div class="row"><strong>${esc(v.name)}</strong><span class="chip">${esc(v.area)}</span><span class="chip">${LANG[v.language] || v.language}</span><span class="chip">★ ${v.rating} (${v.review_count})</span></div>
+        <div class="small muted">${v.reviews.map(esc).join(" · ")}</div>
+        <div class="row" style="margin-top:4px"><button data-vendor="${v.id}">${quoted.has(v.id) ? "Re-run enquiry" : "Play this vendor (enquiry)"}</button>${quoted.has(v.id) ? '<span class="small ok">quote received</span>' : ""}</div>
+      </div>`).join("")}
+      <h3>Quote comparison (rules engine)</h3>
+      ${cmp.ranked.length ? `<table><tr><th>#</th><th>Vendor</th><th>Landed cost</th><th>Flags</th></tr>${ranked}</table>` : '<p class="small muted">No quotes yet. Play a vendor above.</p>'}
+      <div class="row" style="margin-top:8px"><button class="primary" data-book="${cat}" ${cmp.top ? "" : "disabled"}>Family approves: book top, keep backup</button></div>
+      ${bookingRows ? `<h3>Booking</h3>${bookingRows}` : ""}
+    </section>`;
+  }).join("");
+  document.querySelectorAll("[data-vendor]").forEach((b) => (b.onclick = () => talk({ mode: "vendor_call", vendor_id: b.dataset.vendor }, vendorById(b.dataset.vendor).name)));
+  document.querySelectorAll("[data-book]").forEach((b) => (b.onclick = async () => { try { await api(`/api/book/${b.dataset.book}`); refresh(); } catch (e) { toast(e.message); } }));
+}
+
+function renderCheckins() {
+  const c = S.checkins || [];
+  $("checkins-sec").hidden = !c.length;
+  $("checkins").innerHTML = `<table><tr><th>Due</th><th>Vendor</th><th>Check</th><th>Status</th><th></th></tr>${c.map((x) => `<tr>
+      <td class="small">${esc(x.due_at.replace("T", " "))}</td><td>${esc(vendorById(x.vendor_id)?.name)} <span class="chip">${CAT[x.category]}</span></td>
+      <td>${esc(x.label)}</td>
+      <td class="${{ confirmed: "ok", pending: "muted", delayed: "warn", unsure: "warn" }[x.status] || "bad"}">${esc(x.status)}${x.eta ? " · ETA " + esc(x.eta) : ""}${x.notes ? `<div class="small muted">${esc(x.notes)}</div>` : ""}</td>
+      <td>${x.status === "pending" ? `<div class="row"><button data-checkin="${x.id}">Play vendor</button><button data-noanswer="${x.id}">No answer</button></div>` : ""}</td></tr>`).join("")}</table>`;
+  document.querySelectorAll("[data-checkin]").forEach((b) => (b.onclick = () => { const x = c.find((y) => y.id == b.dataset.checkin); talk({ mode: "checkin", checkin_id: x.id }, vendorById(x.vendor_id).name); }));
+  document.querySelectorAll("[data-noanswer]").forEach((b) => (b.onclick = async () => { await api(`/api/checkins/${b.dataset.noanswer}/unreachable`); refresh(); }));
+}
+
+function renderCalls() {
+  const c = S.calls || [];
+  $("calls-sec").hidden = !c.length;
+  $("calls").innerHTML = c.map((x) => {
+    const avg = x.latencies.length ? (x.latencies.reduce((a, b) => a + b, 0) / x.latencies.length).toFixed(2) + "s avg reply delay" : "no turns";
+    return `<details><summary>${esc(x.started_at.slice(11, 16))} · ${esc(x.mode)} · ${esc(vendorById(x.vendor_id)?.name || "family")} · ${x.duration_secs}s · ${avg}${x.end_reason ? " · " + esc(x.end_reason) : ""}</summary>
+      <div class="transcript">${x.transcript.map((t) => `<p><span class="who">${t.role === "bandobast" ? "Bandobast" : "Them"}:</span> ${esc(t.text)}</p>`).join("")}</div></details>`;
+  }).join("");
+}
+
+async function refresh() {
+  try { S = await (await fetch("/api/state")).json(); } catch { return; }
+  CAT = S.names.categories;
+  renderEvent(); renderAlerts(); renderCategories(); renderCheckins(); renderCalls();
+}
+
+$("reset").onclick = async () => { if (confirm("Delete the event, quotes, bookings and call logs?")) { await api("/api/reset"); refresh(); } };
+refresh();
+setInterval(() => { if (!document.querySelector("details[open]")) refresh(); }, 4000);
+</script>
+</body>
+</html>
