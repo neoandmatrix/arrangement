@@ -11,7 +11,9 @@
     "reviews": [
       "Did the griha pravesh puja exactly as per North Indian vidhi, explained every step in Hindi.",
       "Came on time and brought all samagri."
-    ]
+    ],
+    "lat": 12.9061,
+    "lon": 77.6419
   },
   {
     "id": "P02",
@@ -25,7 +27,9 @@
     "reviews": [
       "Very knowledgeable, performs puja in Kannada and Sanskrit.",
       "Good, but arrived 40 minutes late because of another booking."
-    ]
+    ],
+    "lat": 12.9297,
+    "lon": 77.5882
   },
   {
     "id": "P03",
@@ -39,7 +43,9 @@
     "reviews": [
       "Puja was fine but dakshina changed on the day, asked for more than agreed.",
       "Speaks Hindi and Bhojpuri, good for North Indian families."
-    ]
+    ],
+    "lat": 12.9602,
+    "lon": 77.7033
   },
   {
     "id": "P04",
@@ -53,7 +59,9 @@
     "reviews": [
       "Punctual and very organised. Busy in wedding season, book early.",
       "Performed vastu shanti and griha pravesh together."
-    ]
+    ],
+    "lat": 12.9987,
+    "lon": 77.5643
   },
   {
     "id": "P05",
@@ -67,7 +75,9 @@
     "reviews": [
       "Telugu and Sanskrit, very patient with the family.",
       "Did not show up once, sent a junior pandit without telling us."
-    ]
+    ],
+    "lat": 12.9698,
+    "lon": 77.7478
   },
   {
     "id": "C01",
@@ -81,7 +91,9 @@
     "reviews": [
       "Tasty North and South Indian veg food, staff was polite.",
       "Food arrived 2 hours late for our pooja, guests waited."
-    ]
+    ],
+    "lat": 12.921,
+    "lon": 77.6057
   },
   {
     "id": "C02",
@@ -95,7 +107,9 @@
     "reviews": [
       "Best Rajasthani and North Indian thali in Bengaluru, always on time.",
       "Transport and serving staff charged extra, mention it upfront."
-    ]
+    ],
+    "lat": 12.9319,
+    "lon": 77.63
   },
   {
     "id": "C03",
@@ -109,7 +123,9 @@
     "reviews": [
       "Authentic Udupi food on banana leaf, very reliable.",
       "Mostly South Indian, limited North Indian items."
-    ]
+    ],
+    "lat": 12.9417,
+    "lon": 77.5771
   },
   {
     "id": "C04",
@@ -123,7 +139,9 @@
     "reviews": [
       "Cancelled the night before our function, had to order from a restaurant.",
       "Good presentation, a bit expensive."
-    ]
+    ],
+    "lat": 12.9774,
+    "lon": 77.6423
   },
   {
     "id": "C05",
@@ -137,7 +155,9 @@
     "reviews": [
       "Spicy Andhra meals, can make North Indian on request.",
       "Price per plate was raised after we confirmed the count."
-    ]
+    ],
+    "lat": 12.843,
+    "lon": 77.6591
   },
   {
     "id": "C06",
@@ -151,7 +171,9 @@
     "reviews": [
       "Home-style Punjabi food, small orders welcome.",
       "Owner answers calls himself, very responsive."
-    ]
+    ],
+    "lat": 12.9138,
+    "lon": 77.6441
   },
   {
     "id": "D01",
@@ -165,7 +187,9 @@
     "reviews": [
       "Beautiful marigold and mango leaf toran, fresh flowers.",
       "Setup started late but finished before the muhurat."
-    ]
+    ],
+    "lat": 12.9594,
+    "lon": 77.5721
   },
   {
     "id": "D02",
@@ -179,7 +203,9 @@
     "reviews": [
       "Tent and chairs fine, flowers were extra and not told before.",
       "Team did not come on the decided time."
-    ]
+    ],
+    "lat": 13.0994,
+    "lon": 77.6007
   },
   {
     "id": "D03",
@@ -193,7 +219,9 @@
     "reviews": [
       "Lovely rangoli and flower decor for house warming.",
       "Clear pricing, no surprises."
-    ]
+    ],
+    "lat": 12.9096,
+    "lon": 77.5879
   },
   {
     "id": "D04",
@@ -207,7 +235,9 @@
     "reviews": [
       "Modern decor, good for small functions.",
       "Asked for full payment in advance."
-    ]
+    ],
+    "lat": 13.0314,
+    "lon": 77.597
   },
   {
     "id": "K01",
@@ -221,7 +251,9 @@
     "reviews": [
       "Eggless cakes taste great, delivered on time for our naamkaran.",
       "Custom cradle design was lovely."
-    ]
+    ],
+    "lat": 12.9116,
+    "lon": 77.6452
   },
   {
     "id": "K02",
@@ -235,7 +267,9 @@
     "reviews": [
       "Good butterscotch cake, polite on the phone.",
       "Delivered 2 hours late, the guests had already left."
-    ]
+    ],
+    "lat": 12.9396,
+    "lon": 77.6201
   },
   {
     "id": "K03",
@@ -249,7 +283,9 @@
     "reviews": [
       "Classic eggless cakes, fair price.",
       "Busy on weekends, order three days ahead."
-    ]
+    ],
+    "lat": 12.9275,
+    "lon": 77.5893
   },
   {
     "id": "F01",
@@ -263,7 +299,9 @@
     "reviews": [
       "Captured every ritual of the griha pravesh, album in ten days.",
       "Candid shots were beautiful."
-    ]
+    ],
+    "lat": 12.973,
+    "lon": 77.6445
   },
   {
     "id": "F02",
@@ -277,7 +315,9 @@
     "reviews": [
       "Nice photos but did not show up for the second day.",
       "Video editing took a month."
-    ]
+    ],
+    "lat": 12.9221,
+    "lon": 77.6112
   },
   {
     "id": "F03",
@@ -291,7 +331,9 @@
     "reviews": [
       "Speaks Hindi, great with kids at our mundan.",
       "Delivered photos within a week."
-    ]
+    ],
+    "lat": 12.9094,
+    "lon": 77.6463
   },
   {
     "id": "T01",
@@ -305,7 +347,9 @@
     "reviews": [
       "Shamiana and chairs set up early, sound was clear.",
       "Removed everything the same evening."
-    ]
+    ],
+    "lat": 12.9052,
+    "lon": 77.6207
   },
   {
     "id": "T02",
@@ -319,7 +363,9 @@
     "reviews": [
       "Cheap, but the transport charge was raised after booking.",
       "Mic stopped working during the puja."
-    ]
+    ],
+    "lat": 12.8397,
+    "lon": 77.6547
   },
   {
     "id": "T03",
@@ -333,6 +379,8 @@
     "reviews": [
       "Good tent for 100 guests, helpful team.",
       "Speaks Tamil and some Kannada."
-    ]
+    ],
+    "lat": 12.9293,
+    "lon": 77.6828
   }
 ]

@@ -61,6 +61,28 @@ CREATE TABLE IF NOT EXISTS checkins (
     notes TEXT,
     done_at TEXT
 );
+CREATE TABLE IF NOT EXISTS enquiries (
+    event_id INTEGER NOT NULL,
+    vendor_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    status TEXT NOT NULL,        -- shortlisted | ringing | in_call | quoted | declined | no_answer | failed
+                                 -- | approved | rejected | renegotiating
+    channel TEXT,                -- app | phone | none
+    call_id TEXT,
+    note TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (event_id, vendor_id)
+);
+CREATE TABLE IF NOT EXISTS devices (
+    vendor_id TEXT PRIMARY KEY,  -- the vendor this phone signed in as
+    push_token TEXT,             -- Firebase Cloud Messaging token, if any
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS discovered (
+    event_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    data TEXT NOT NULL           -- [{name, source, lat, lon, distance_km, url}]
+);
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY,
     event_id INTEGER NOT NULL,
@@ -175,6 +197,16 @@ def latest_quotes(event_id: int) -> dict[str, dict[str, Any]]:
     return {r["vendor_id"]: json.loads(r["data"]) for r in rows}
 
 
+def quote_from_call(call_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT data FROM quotes WHERE call_id = ? ORDER BY id DESC LIMIT 1", (call_id,)).fetchone()
+    return json.loads(row["data"]) if row else None
+
+
+def call(call_id: str) -> dict[str, Any] | None:
+    return next((c for c in calls(None) if c["id"] == call_id), None)
+
+
 # Bookings
 
 
@@ -252,3 +284,68 @@ def alerts(event_id: int) -> list[dict[str, Any]]:
             "SELECT * FROM alerts WHERE event_id = ? ORDER BY id DESC", (event_id,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# Enquiries: where each shortlisted vendor stands for the current event
+
+
+def set_enquiry(event_id: int, vendor_id: str, category: str, status: str, **fields: Any) -> None:
+    with connect() as conn:
+        old = conn.execute(
+            "SELECT channel, call_id, note FROM enquiries WHERE event_id = ? AND vendor_id = ?", (event_id, vendor_id)
+        ).fetchone()
+        merged = {**(dict(old) if old else {}), **fields}
+        conn.execute(
+            """INSERT OR REPLACE INTO enquiries (event_id, vendor_id, category, status, channel, call_id, note, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (event_id, vendor_id, category, status, merged.get("channel"), merged.get("call_id"), merged.get("note"), now()),
+        )
+
+
+def enquiries(event_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM enquiries WHERE event_id = ? ORDER BY updated_at", (event_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def enquiry(event_id: int, vendor_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM enquiries WHERE event_id = ? AND vendor_id = ?", (event_id, vendor_id)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# Vendor phones running the app
+
+
+def save_device(vendor_id: str, push_token: str | None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO devices (vendor_id, push_token, updated_at) VALUES (?, ?, ?)",
+            (vendor_id, push_token, now()),
+        )
+
+
+def device(vendor_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM devices WHERE vendor_id = ?", (vendor_id,)).fetchone()
+    return dict(row) if row else None
+
+
+# Businesses found near the venue (shown, never contacted: the demo uses synthetic vendors only)
+
+
+def save_discovered(event_id: int, category: str, places: list[dict[str, Any]]) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM discovered WHERE event_id = ? AND category = ?", (event_id, category))
+        conn.execute(
+            "INSERT INTO discovered (event_id, category, data) VALUES (?, ?, ?)",
+            (event_id, category, json.dumps(places, ensure_ascii=False)),
+        )
+
+
+def discovered(event_id: int) -> dict[str, list[dict[str, Any]]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT category, data FROM discovered WHERE event_id = ?", (event_id,)).fetchall()
+    return {r["category"]: json.loads(r["data"]) for r in rows}

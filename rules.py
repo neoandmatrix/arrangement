@@ -5,8 +5,10 @@
 - the check-in schedule before the function
 - when a booked vendor is at risk and the backup should take over
 - what to counter-offer when negotiating, and when to stop
+- which vendors to call: the shortlist near the venue
 """
 
+import math
 import re
 from datetime import datetime, timedelta
 from typing import Any
@@ -335,3 +337,56 @@ def assess_risk(
     if last["status"] in ("unsure", "unreachable"):
         return {"action": "warn", "reason": f"Check-in '{last['label']}': {last['status']}"}
     return None
+
+
+SHORTLIST_SIZE = 3
+MAX_DISTANCE_KM = 15  # across Bengaluru traffic, further than this risks a late arrival
+
+
+def distance_km(a_lat: float, a_lon: float, b_lat: float, b_lon: float) -> float:
+    """Straight-line distance (haversine)."""
+    r = 6371.0
+    p1, p2 = math.radians(a_lat), math.radians(b_lat)
+    dp, dl = p2 - p1, math.radians(b_lon - a_lon)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
+
+
+def venue_location(brief: dict[str, Any]) -> tuple[float, float] | None:
+    loc = brief.get("location") or {}
+    if loc.get("lat") is None or loc.get("lon") is None:
+        return None
+    return float(loc["lat"]), float(loc["lon"])
+
+
+def shortlist(
+    category: str,
+    vendors: list[dict[str, Any]],
+    brief: dict[str, Any],
+    *,
+    exclude: set[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Up to three vendors to call for one service: near enough, fewest review warnings, best rated.
+
+    Returns rows {vendor_id, distance_km, warnings, rating}, in calling order.
+    """
+    venue = venue_location(brief)
+    rows = []
+    for v in vendors:
+        if v["category"] != category or v["id"] in exclude:
+            continue
+        distance = None
+        if venue and v.get("lat") is not None:
+            distance = round(distance_km(*venue, v["lat"], v["lon"]), 1)
+            if distance > MAX_DISTANCE_KM:
+                continue
+        rows.append(
+            {
+                "vendor_id": v["id"],
+                "distance_km": distance,
+                "warnings": len(review_warnings(v)),
+                "rating": v.get("rating", 0),
+            }
+        )
+    rows.sort(key=lambda r: (r["warnings"] > 0, -r["rating"], r["distance_km"] or 0))
+    return rows[:SHORTLIST_SIZE]

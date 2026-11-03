@@ -17,3 +17,8 @@ calls/
 bandobast.db
 .sim_cache/
 DEVELOPMENT.md
+
+# Firebase: app config and the server's private key
+google-services.json
+firebase-service-account*.json
+*-firebase-adminsdk-*.json

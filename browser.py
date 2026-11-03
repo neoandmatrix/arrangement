@@ -4,10 +4,12 @@ The dashboard picks who you'll be (POST /api/browser-session), then opens the pr
 Pipecat UI at /client/, which calls /start and then /sessions/{id}/api/offer.
 """
 
+import asyncio
 import uuid
+from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -30,6 +32,9 @@ _handler = SmallWebRTCRequestHandler()
 # The dashboard's choice for the next browser session, and the sessions /start created.
 _next_session: dict[str, Any] = {}
 _sessions: dict[str, dict[str, Any]] = {}
+_running: set[asyncio.Task] = set()  # keep references so conversations aren't garbage-collected
+
+ICE_CONFIG = {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 
 
 def set_next_session(data: dict[str, Any]) -> None:
@@ -48,17 +53,32 @@ async def start(request: Request):
         raise HTTPException(400, "Pick a conversation on the dashboard first")
     session_id = str(uuid.uuid4())
     _sessions[session_id] = dict(_next_session)
-    return {"sessionId": session_id, "iceConfig": {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}}
+    return {"sessionId": session_id, "iceConfig": ICE_CONFIG}
 
 
 @router.api_route("/sessions/{session_id}/api/offer", methods=["POST", "PATCH"])
-async def offer(session_id: str, request: Request, background_tasks: BackgroundTasks):
+async def offer(session_id: str, request: Request):
     session = _sessions.get(session_id)
     if session is None:
         raise HTTPException(404, "Unknown session")
-    data = await request.json()
+    return await webrtc_offer(await request.json(), request.method, session, channel="browser")
 
-    if request.method == "PATCH":
+
+async def webrtc_offer(
+    data: dict[str, Any],
+    method: str,
+    session: dict[str, Any],
+    *,
+    channel: str,
+    call_id: str | None = None,
+    on_done: Callable[[], None] | None = None,
+) -> dict[str, Any] | None:
+    """Answer a WebRTC offer (POST) or add ICE candidates (PATCH); a new connection starts the conversation.
+
+    Shared by the dashboard's browser test and the app's incoming calls. on_done runs when the
+    conversation has ended and its call record is saved.
+    """
+    if method == "PATCH":
         await _handler.handle_patch_request(
             SmallWebRTCPatchRequest(
                 pc_id=data["pc_id"],
@@ -68,19 +88,25 @@ async def offer(session_id: str, request: Request, background_tasks: BackgroundT
         return {"status": "success"}
 
     async def on_connection(connection: SmallWebRTCConnection) -> None:
-        cfg = SessionConfig.from_dict(session, channel="browser")
+        cfg = SessionConfig.from_dict(session, channel=channel, call_id=call_id)
         transport = SmallWebRTCTransport(
             webrtc_connection=connection,
             params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
         )
-        logger.info(f"Browser session {session_id}: {session}")
-        background_tasks.add_task(
-            run_conversation,
-            transport,
-            cfg,
-            sample_rate_in=SAMPLE_RATE_IN,
-            sample_rate_out=SAMPLE_RATE_OUT,
-        )
+        logger.info(f"WebRTC session ({channel}) {cfg.call_id}: {session}")
+
+        async def run() -> None:
+            try:
+                await run_conversation(transport, cfg, sample_rate_in=SAMPLE_RATE_IN, sample_rate_out=SAMPLE_RATE_OUT)
+            except Exception:
+                logger.exception(f"Conversation {cfg.call_id} failed")
+            finally:
+                if on_done:
+                    on_done()
+
+        task = asyncio.create_task(run())
+        _running.add(task)
+        task.add_done_callback(_running.discard)
 
     return await _handler.handle_web_request(
         request=SmallWebRTCRequest(

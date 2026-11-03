@@ -28,9 +28,14 @@ def competitor_quotes(vendor_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def rejected(event_id: int) -> set[str]:
+    return {e["vendor_id"] for e in store.enquiries(event_id) if e["status"] == "rejected"}
+
+
 def comparison(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
-    """Ranked quotes per category, with the rules' top pick and backup."""
-    quotes = store.latest_quotes(event_id)
+    """Ranked quotes per category, with the rules' top pick and backup. Quotes the family rejected are left out."""
+    out_of_the_running = rejected(event_id)
+    quotes = {v: q for v, q in store.latest_quotes(event_id).items() if v not in out_of_the_running}
     by_id = {v["id"]: v for v in store.vendors()}
     out = {}
     for category in rules.CATEGORIES:
@@ -40,15 +45,25 @@ def comparison(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def book(category: str) -> dict[str, Any]:
-    """Family approved: book the top pick, keep the runner-up on standby, schedule check-ins."""
+def book(category: str, vendor_id: str | None = None) -> dict[str, Any]:
+    """Family approved: book their choice (or the top pick), keep the next best on standby, schedule check-ins."""
     event_id, brief = require_event()
-    result = comparison(event_id, brief)[category]
-    if not result["top"]:
+    ranked = comparison(event_id, brief)[category]["ranked"]
+    bookable = [r["vendor_id"] for r in ranked if r["bookable"]]
+    if vendor_id and vendor_id not in bookable:
+        raise ValueError(f"{vendor_id} has no bookable {category} quote")
+    primary = vendor_id or (bookable[0] if bookable else None)
+    if not primary:
         raise ValueError(f"No bookable {category} quote yet")
+    backup_id = next((v for v in bookable if v != primary), None)
+    result = {"top": primary, "backup": backup_id}
+    if any(b["category"] == category and b["role"] == "primary" for b in store.bookings(event_id)):
+        raise ValueError(f"A {category} is already booked")
     store.set_booking(event_id, category, "primary", result["top"], "active")
+    store.set_enquiry(event_id, primary, category, "approved")
     if result["backup"]:
         store.set_booking(event_id, category, "backup", result["backup"], "standby")
+        store.set_enquiry(event_id, backup_id, category, "standby")
     store.add_checkins(event_id, result["top"], category, rules.checkin_schedule(brief, category))
     primary = store.vendor(result["top"])
     backup = store.vendor(result["backup"]) if result["backup"] else None
@@ -59,6 +74,14 @@ def book(category: str) -> dict[str, Any]:
         + (f"; {backup['name']} is on standby as backup." if backup else "; no backup available yet."),
     )
     return {"primary": result["top"], "backup": result["backup"]}
+
+
+def reject(vendor_id: str) -> None:
+    """The family doesn't want this vendor: drop them from the comparison."""
+    event_id, _ = require_event()
+    if any(b["vendor_id"] == vendor_id and b["status"] in ("active", "standby") for b in store.bookings(event_id)):
+        raise ValueError("That vendor is booked; it can't be rejected now")
+    store.set_enquiry(event_id, vendor_id, store.vendor(vendor_id)["category"], "rejected")
 
 
 def record_checkin(checkin_id: int, status: str, eta: str | None, notes: str | None) -> dict[str, str] | None:

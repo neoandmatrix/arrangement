@@ -68,6 +68,7 @@ class SessionConfig:
     channel: str  # "phone" | "browser"
     vendor_id: str | None = None
     checkin_id: int | None = None
+    renegotiate: bool = False  # vendor_call: calling back about their quote, at the family's request
     call_id: str = field(default_factory=lambda: f"BR{uuid.uuid4().hex[:12]}")
 
     @classmethod
@@ -81,6 +82,7 @@ class SessionConfig:
             channel=channel,
             vendor_id=data.get("vendor_id") or None,
             checkin_id=int(checkin_id) if checkin_id not in (None, "") else None,
+            renegotiate=str(data.get("renegotiate", "")).lower() in ("1", "true"),
         )
         if call_id:
             cfg.call_id = call_id
@@ -206,7 +208,14 @@ def _plan(cfg: SessionConfig) -> tuple[str, list[FunctionSchema], str, int | Non
     event_id, brief = workflow.require_event()
     if cfg.mode == "vendor_call":
         vendor = store.vendor(cfg.vendor_id)
-        return prompts.vendor_prompt(vendor=vendor, brief=brief), [RECORD_QUOTE, END_CALL], vendor["language"], event_id
+        quote = store.latest_quotes(event_id).get(vendor["id"])
+        if cfg.renegotiate:
+            if not quote:
+                raise ValueError(f"No quote from {vendor['name']} to renegotiate")
+            prompt = prompts.renegotiation_prompt(vendor=vendor, brief=brief, quote=quote)
+        else:
+            prompt = prompts.vendor_prompt(vendor=vendor, brief=brief)
+        return prompt, [RECORD_QUOTE, END_CALL], vendor["language"], event_id
 
     checkin = store.checkin(cfg.checkin_id)
     cfg.vendor_id = checkin["vendor_id"]
@@ -252,6 +261,10 @@ async def run_conversation(
         tools=ToolsSchema(standard_tools=tools),
     )
     outcome: dict[str, Any] = {}
+    previous_quote = store.latest_quotes(event_id).get(cfg.vendor_id) if cfg.renegotiate else None
+    if previous_quote:
+        # Savings are measured from their original opening price, not from this call's.
+        outcome["first_price"] = previous_quote.get("initial_price_amount") or previous_quote.get("price_amount")
 
     def user_turns() -> int:
         return sum(_is_spoken_turn(m) and m["role"] == "user" for m in context.get_messages())
@@ -335,6 +348,9 @@ async def run_conversation(
             return
         quote = normalize_quote(dict(fn.arguments))
         vendor_said = " ".join(_text(m) for m in context.get_messages() if _is_spoken_turn(m) and m["role"] == "user")
+        if previous_quote:
+            # On a callback, the amounts they quoted (and we verified) last time count as said.
+            vendor_said += " " + " ".join(str(previous_quote.get(f) or "") for f in rules.AMOUNT_FIELDS)
         quote["unverified"] = rules.unverified_amounts(quote, vendor_said)
         if quote["unverified"]:
             log.warning(f"record_quote: amounts not heard from the vendor: {quote['unverified']}")

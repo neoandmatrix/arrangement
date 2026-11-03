@@ -1,0 +1,67 @@
+# Builds the Bandobast Android app and attaches the APK to the run (Actions tab → the run → Artifacts).
+#
+# Runs on every push that touches app/, or by hand (Actions → Build Android APK → Run workflow).
+# Firebase push is optional: add the contents of google-services.json as the repository secret
+# GOOGLE_SERVICES_JSON (Settings → Secrets and variables → Actions). Without it the app still builds
+# and rings while it's open.
+name: Build Android APK
+
+on:
+  push:
+    paths:
+      - "app/**"
+      - ".github/workflows/android-apk.yml"
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "release (smaller, faster) or debug (if release misbehaves)"
+        type: choice
+        options: [release, debug]
+        default: release
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.7"
+          channel: stable
+          cache: true
+
+      - name: Firebase config (optional)
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+            echo "Firebase push: on"
+          else
+            echo "Firebase push: off (no GOOGLE_SERVICES_JSON secret)"
+          fi
+
+      - run: flutter pub get
+      - run: flutter analyze
+
+      - name: Build APK
+        run: flutter build apk --${{ inputs.build_type || 'release' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bandobast-${{ inputs.build_type || 'release' }}-${{ github.run_number }}
+          path: app/build/app/outputs/flutter-apk/app-*.apk
+          retention-days: 14

@@ -11,10 +11,25 @@ Decided on 2026-11-03. Synthetic data only (contest rule): vendors are fictional
 | Functions | Griha pravesh, pujas, baby ceremonies | Birthdays, weddings, parties |
 | Vendors | Priest, caterer, decorator, cake, photographer, tent and sound | Venue booking, travel, return gifts |
 | City | Bengaluru (Kannada, Hindi, Telugu, English vendors) | Other cities |
-| Family | WhatsApp (voice and text) and the web dashboard; any of Gnani's 10 languages | Family app |
-| Vendors | Phone call (Twilio, Plivo) or Bandobast Partner app (WebRTC), one pluggable channel | |
+| Family | The Bandobast app (Flutter, Android); family-facing text in any of Gnani's 10 languages | WhatsApp (later) |
+| Vendors | The same app in vendor mode: calls ring in the app over the internet (WebRTC, Firebase push). Vendors without the app get a phone call (Twilio; code in the repo, needs a real number) | |
 | Money | Record the agreed advance and remind the family | Collecting or sending payments |
 | After booking | Confirmation call, check-ins, backup switch, post-event rating | A day-of emergency line (the check-ins and backup switch cover a last-minute failure) |
+
+
+## The app (decided 2026-11-03)
+
+One Flutter app, two roles chosen on first launch.
+
+**Family:** pin the venue on a map (OpenStreetMap), pick the occasion and variant, tick the services (the function's usual ones are pre-ticked), date and muhurat, guests, a budget and wishes per service. Submit, then watch it work: vendors found, called one by one, quotes in. Per quote: **approve**, **reject**, or **renegotiate** (Bandobast calls again and asks for a better price, the rules choosing the number). Approving books it and keeps the next best on standby.
+
+**Vendor:** pick which (demo) vendor you are. Calls from Bandobast ring full-screen, through Firebase push even when the app is closed, or the live connection while it's open. Answer and talk; the call runs through the same pipeline as every other channel. The vendor sees their enquiries and bookings.
+
+**Vendors without the app** get a normal phone call through Twilio (`CALL_CHANNEL` code path). It is in the repo and tested with the simulator; it needs a real Indian number to go live.
+
+**Finding vendors:** the demo directory (synthetic vendors with locations), plus discovery near the pin: OpenStreetMap places by type (caterers, bakeries, photo studios, temples) and web search when a search key is set. Discovered businesses are shown as "found nearby" and never contacted in the demo (synthetic data only). The rules shortlist up to three reachable vendors per service by distance, reviews and rating.
+
+**Server:** the existing FastAPI backend. The app talks to it over HTTPS (a tunnel or a small VM) with an access key, so strangers can't spend API credits.
 
 ## Functions
 
@@ -118,11 +133,11 @@ Done: function types and all six vendor categories, intake, enquiry calls with n
 
 To build:
 
-1. Family language: intake and family-facing text in any of the 10 languages.
-2. Shortlist rules and enquiry calls driven from the dashboard.
-3. Confirmation call and the advance reminder.
-4. Post-event rating and the reliability score.
-5. Pluggable calling layer: `CALL_CHANNEL=twilio | plivo | app`.
-6. WhatsApp family channel (Meta test number), including "add a vendor".
-7. Control-room dashboard view with live transcript and translation.
-8. Bandobast Partner Android app (Flutter).
+1. App API on the server: catalog, create a function from the form, status, approve / reject / renegotiate, vendor sign-in and presence, access key.
+2. Calling layer: ring the vendor's app (WebRTC call), else Twilio, else no answer; enquiries run one call at a time.
+3. Discovery and shortlist: directory with locations, OpenStreetMap near the pin, optional web search.
+4. Flutter app: family flow, vendor flow, incoming-call screen, Firebase push.
+5. Renegotiation call and the confirmation call after approval.
+6. Family language for the app's text and summaries.
+7. Deploy (HTTPS), demo video, README, post.
+8. Later: post-event rating, WhatsApp, control-room translation.

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
+import app_api
 import browser
 import catalog
 import prompts
@@ -42,6 +43,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Bandobast", lifespan=lifespan)
+app.include_router(app_api.router)  # the Flutter app (access key required)
 
 
 def local_only(request: Request) -> None:

@@ -188,3 +188,39 @@ Call flow:
 4. Call record_checkin with the status: confirmed, delayed (with the ETA as HH:MM in 24-hour time), cancelled, or unsure.
 5. Thank them and call end_call.
 """
+
+
+def _quote_summary(quote: dict[str, Any]) -> str:
+    unit = "per plate" if quote.get("price_unit") == "per_plate" else "in total"
+    parts = [f"price {quote.get('price_amount')} rupees {unit}"]
+    if quote.get("transport_charge") is not None:
+        parts.append(f"transport {quote['transport_charge']}")
+    if quote.get("extra_charges_amount"):
+        parts.append(f"other charges {quote['extra_charges_amount']} ({quote.get('extra_charges_notes') or ''})")
+    if quote.get("advance_amount") is not None:
+        parts.append(f"advance {quote['advance_amount']}")
+    if quote.get("includes_notes"):
+        parts.append(f"covers: {quote['includes_notes']}")
+    return ", ".join(parts)
+
+
+def renegotiation_prompt(*, vendor: dict[str, Any], brief: dict[str, Any], quote: dict[str, Any]) -> str:
+    """A callback at the family's request: can they do a little better on the quote they gave?"""
+    return f"""You are Bandobast, calling {vendor['name']}, a local {catalog.CATEGORIES[vendor['category']]['spoken']}, back on behalf of the {brief['family_name']} family.
+You spoke earlier and they quoted: {_quote_summary(quote)}.
+The family liked the offer and would like to go ahead, but asked if the price can come down a little.
+
+The function: {_brief_summary(brief)}
+
+{_language_rule(vendor['language'])}
+{VOICE_RULES}
+{HONESTY}
+
+Call flow:
+1. Greet them, say you are calling back for the {brief['family_name']} family about their quote, and ask if this is a good time.
+2. If they are busy, ask when to call back, thank them, and call end_call.
+3. Otherwise call record_quote right away with their earlier quote exactly as above. It will tell you what to ask for.
+   Ask that, warmly and respectfully, never pushy. Never offer a price of your own.
+4. When they answer, call record_quote again with what they agree to now (their earlier quote if they say no). Repeat until it saves.
+5. Once it is saved, thank them and say the family will confirm soon. Never agree to a booking or payment. Then call end_call.
+"""
