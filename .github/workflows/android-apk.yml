@@ -46,13 +46,34 @@ jobs:
       - name: Firebase config (optional)
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        # Accepts the file's contents as plain JSON or base64, and stops with a clear message otherwise.
         run: |
-          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
-            echo "Firebase push: on"
-          else
-            echo "Firebase push: off (no GOOGLE_SERVICES_JSON secret)"
-          fi
+          python3 - <<'PY'
+          import base64, json, os, sys
+          raw = os.environ.get("GOOGLE_SERVICES_JSON", "").strip()
+          if not raw:
+              print("Firebase push: off (no GOOGLE_SERVICES_JSON secret)")
+              sys.exit(0)
+          config = None
+          for text in (raw, None):
+              try:
+                  config = json.loads(text if text is not None else base64.b64decode(raw, validate=False))
+                  break
+              except Exception:
+                  continue
+          if not isinstance(config, dict) or "project_info" not in config:
+              print("::error::GOOGLE_SERVICES_JSON is not a google-services.json file. Set it with: "
+                    "gh secret set GOOGLE_SERVICES_JSON < app/android/app/google-services.json "
+                    f"(it starts with {raw[:6]!r}, {len(raw)} characters)")
+              sys.exit(1)
+          packages = [c["client_info"]["android_client_info"]["package_name"] for c in config.get("client", [])]
+          if "ai.bandobast.app" not in packages:
+              print(f"::error::google-services.json is for {packages}, not ai.bandobast.app")
+              sys.exit(1)
+          with open("android/app/google-services.json", "w") as f:
+              json.dump(config, f)
+          print(f"Firebase push: on (project {config['project_info']['project_id']})")
+          PY
 
       - run: flutter pub get
       - run: flutter analyze

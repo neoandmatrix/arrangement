@@ -12,7 +12,7 @@ if (file("google-services.json").exists()) {
 
 android {
     namespace = "ai.bandobast.bandobast"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37  // permission_handler needs 37; backward compatible
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
