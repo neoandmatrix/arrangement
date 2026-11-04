@@ -29,7 +29,7 @@ class ServiceQuotes extends StatelessWidget {
       ]),
       if (service['budget'] != null) Padding(padding: const EdgeInsets.only(top: 4),
           child: Text('Budget ${rupees(service['budget'] as num)}')),
-      if (isBooked(service)) TextButton.icon(onPressed: onBookings, icon: const Icon(Icons.verified_outlined), label: const Text('Already booked · view booking')),
+      if (isSelected(service)) TextButton.icon(onPressed: onBookings, icon: const Icon(Icons.verified_outlined), label: Text(isBooked(service) ? 'Already booked · view booking' : 'Vendor selected · view confirmation')),
       if (vendors.isEmpty) const Card(child: ListTile(leading: Icon(Icons.search), title: Text('Finding vendors near your venue…'))),
       for (final vendor in quoted) _quote(context, vendor),
       if (quoted.isEmpty && vendors.isNotEmpty) const Padding(
@@ -59,7 +59,7 @@ class ServiceQuotes extends StatelessWidget {
 
   Widget _quote(BuildContext context, Map<String, dynamic> vendor) {
     final id = vendor['vendor_id'] as String;
-    final canDecide = vendor['status'] == 'quoted' && !isBooked(service);
+    final canDecide = vendor['status'] == 'quoted' && !isSelected(service);
     final pending = pendingRates.contains(id);
     final top = vendor['top'] == true && canDecide && !pending;
     final status = vendorStatuses[vendor['status']] ?? ('${vendor['status']}', Icons.help_outline);
@@ -89,7 +89,7 @@ class ServiceQuotes extends StatelessWidget {
             child: Wrap(spacing: 8, runSpacing: 4, children: [
               FilledButton.icon(
                 onPressed: busy.contains(id) || pending || vendor['bookable'] != true ? null
-                    : () => onAct(id, 'approve', 'Booked ${vendor['name']}; the next best is on standby'),
+                    : () => onAct(id, 'approve', 'Approved ${vendor['name']}; Bandobast will call to confirm the booking'),
                 icon: const Icon(Icons.check), label: const Text('Approve'),
               ),
               if (service['negotiable'] == true) OutlinedButton(

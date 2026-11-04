@@ -27,6 +27,8 @@ import price_safety
 import rules
 import store
 import workflow
+import confirmations
+import confirmation_rules
 from conversation import brief_problems
 
 _LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
@@ -188,6 +190,16 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
             )
         vendors.sort(key=lambda x: (x["rank"] is None, x["rank"] if x["rank"] is not None else 0))
         booked = {b["role"]: b for b in bookings if b["category"] == category}
+        confirmation = confirmations.summary(event_id, category)
+        if confirmation and 'primary' in booked and booked['primary']['status'] in confirmation_rules.RESERVED:
+            approved_quote = store.confirmation(confirmation['id'])['approved_quote']
+            for vendor in vendors:
+                if vendor['vendor_id'] == booked['primary']['vendor_id']:
+                    approved_flags = rules.quote_flags(approved_quote, store.vendor(vendor['vendor_id']), brief)
+                    existing = {(f['level'], f['text']) for f in vendor['flags']}
+                    vendor.update(quote=approved_quote, landed_cost=rules.landed_cost(approved_quote, brief),
+                        flags=vendor['flags'] + [f for f in approved_flags if (f['level'], f['text']) not in existing],
+                        needs_price_reconfirmation=vendor['needs_price_reconfirmation'] or bool(price_safety.issues(approved_quote, brief, category)))
         services.append(
             {
                 "category": category,
@@ -196,7 +208,8 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
                 "budget": (brief.get("budget") or {}).get(category),
                 "vendors": vendors,
                 "discovered": found.get(category, []),
-                "booking": {role: {"vendor_id": b["vendor_id"], "status": b["status"]} for role, b in booked.items()},
+                "booking": {role: {"vendor_id": b["vendor_id"], "status": b["status"],
+                                   **({'confirmation': confirmation} if role == 'primary' else {})} for role, b in booked.items()},
             }
         )
     return {
@@ -206,8 +219,9 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
         "checkins": store.checkins(event_id),
         "updates": [{**u, "data": {**u["data"], "flags": rules.quote_flags(u["data"]["quote"], store.vendor(u["vendor_id"]), brief),
                                     "landed_cost": rules.landed_cost(u["data"]["quote"], brief)}}
-                    if u["kind"] in ("price", "quote") else u for u in store.updates(event_id)],
-        "calling_now": any(e["status"] in ("ringing", "in_call", "renegotiating", "reconfirming") for e in status.values()),
+                     if u["kind"] in ("price", "quote") else u for u in store.updates(event_id)],
+        "confirmations": store.confirmations(event_id),
+        "calling_now": any(e["status"] in ("ringing", "in_call", "renegotiating", "reconfirming", "confirming") for e in status.values()),
     }
 
 
@@ -225,7 +239,9 @@ def _event(request: Request) -> tuple[int, dict[str, Any]]:
 async def approve(vendor_id: str, request: Request):
     _event(request)
     try:
-        return workflow.book(store.vendor(vendor_id)["category"], vendor_id)
+        result = workflow.book(store.vendor(vendor_id)["category"], vendor_id)
+        enquiries.spawn(enquiries.confirmation_call(result['confirmation_id']))
+        return result
     except (KeyError, ValueError) as e:
         raise HTTPException(400, str(e))
 
@@ -263,6 +279,9 @@ async def call_checkin(checkin_id: int, request: Request):
         checkin = store.checkin(checkin_id)
         if checkin["event_id"] != event_id or checkin["status"] != "pending":
             raise HTTPException(400, "This check-in is no longer pending for this function")
+        confirmation = confirmations.summary(event_id, checkin['category'])
+        if not confirmation or confirmation['status'] != 'confirmed':
+            raise HTTPException(400, 'Confirm the vendor booking before running check-ins')
     except (KeyError, LookupError) as e:
         raise HTTPException(404, str(e))
     enquiries.spawn(enquiries.checkin_call(event_id, brief, checkin_id))
@@ -279,6 +298,32 @@ async def reconfirm_prices(vendor_id: str, request: Request):
         raise HTTPException(409, "This vendor already has a call in progress")
     enquiries.spawn(enquiries.reconfirm(event_id, brief, vendor_id))
     return {"ok": True}
+
+
+@api.post('/events/current/vendors/{vendor_id}/confirm')
+async def retry_confirmation(vendor_id: str, request: Request):
+    event_id, _ = _event(request)
+    try:
+        vendor = store.vendor(vendor_id)
+        primary = confirmations.primary(event_id, vendor['category'])
+        if not primary or primary['vendor_id'] != vendor_id:
+            raise ValueError('This vendor is not the family-approved selection')
+        confirmation_id = confirmations.request(event_id, vendor['category'])
+    except (KeyError, ValueError, LookupError) as error:
+        raise HTTPException(400, str(error))
+    enquiries.spawn(enquiries.confirmation_call(confirmation_id))
+    return {'ok': True, 'confirmation_id': confirmation_id}
+
+
+@api.post('/events/current/bookings/{category}/cancel')
+async def cancel_selection(category: str, request: Request):
+    event_id, _ = _event(request)
+    try:
+        confirmations.cancel_selection(event_id, category)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    await enquiries.stop_superseded_confirmation_calls(event_id, category)
+    return {'ok': True}
 
 
 # Vendor
@@ -321,6 +366,7 @@ async def vendor_jobs(vendor_id: str, request: Request):
         return {"event": None, "enquiry": None, "booking": None, "checkins": []}
     event_id, brief = event
     booking = next((b for b in store.bookings(event_id) if b["vendor_id"] == vendor_id), None)
+    confirmation = confirmations.summary(event_id, booking['category']) if booking and booking['role'] == 'primary' else None
     return {
         "event": {
             "label": catalog.function_label(brief),
@@ -332,8 +378,9 @@ async def vendor_jobs(vendor_id: str, request: Request):
             "family_id": brief.get("family_id"),
         },
         "enquiry": store.enquiry(event_id, vendor_id),
-        "quote": store.latest_quotes(event_id).get(vendor_id),
+        "quote": store.confirmation(confirmation['id'])['approved_quote'] if confirmation else store.latest_quotes(event_id).get(vendor_id),
         "booking": booking,
+        'confirmation': confirmation,
         "checkins": [c for c in store.checkins(event_id) if c["vendor_id"] == vendor_id],
         "updates": [u for u in store.updates(event_id) if u["vendor_id"] == vendor_id],
     }
@@ -381,7 +428,9 @@ async def decide_update(update_id: int, decision: str, request: Request):
     if decision not in ("approve", "reject"):
         raise HTTPException(400, "Choose approve or reject")
     try:
-        workflow.decide_update(event_id, update_id, decision == "approve")
+        result = workflow.decide_update(event_id, update_id, decision == "approve")
+        if result.get('confirmation_id'):
+            enquiries.spawn(enquiries.confirmation_call(result['confirmation_id']))
     except (ValueError, LookupError) as e:
         raise HTTPException(400, str(e))
     return {"ok": True}

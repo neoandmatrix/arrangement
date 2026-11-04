@@ -53,9 +53,22 @@ price; tax is never guessed or silently treated as zero. Unresolved amounts bloc
 backup activation and revision approval, even after conversation retries are exhausted.
 Old quotes without field-level evidence need “Reconfirm prices”. Rechecking an already booked
 quote only refreshes verification if charges match; corrected charges become a pending quote
-for family approval. This is price verification, not the later booking-confirmation phase.
+for family approval. This is price verification, not the booking-confirmation call.
 Savings use a verified opening quote with its original pricing unit and charges; a total price
 is never reinterpreted as a per-plate opening price, and waived transport is counted accurately.
+
+**Vendor booking confirmation:** family approval reserves the primary vendor and queues a
+confirmation call. Code reads the approved date, venue, arrival/setup deadline, guest count,
+service details, price unit, charges, total and advance, one question at a time. A clear spoken
+yes is required after each read-back has reached the audio output. Only then is the booking
+marked confirmed and its check-ins created. The family and vendor see the same written summary.
+No answer, decline, callback or an interrupted call never counts as confirmation. Retries use a
+fresh attempt ID; old or duplicated replies cannot confirm a newer approval. A server restart
+retains approval and exposes a retry rather than claiming success or silently redialling.
+Changed prices or service coverage need family approval and a new complete confirmation call.
+Date/time/venue changes are shown for family review, not applied to one vendor independently
+of the function. The family can reject the change and retry original terms, or cancel the
+unconfirmed selection and choose another vendor. Backup confirmation remains a separate phase.
 
 **Vendors without the app** get a normal phone call through Twilio (`CALL_CHANNEL` code path). It is in the repo and tested with the simulator; it needs a real Indian number to go live.
 

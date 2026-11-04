@@ -8,6 +8,9 @@ Map<String, dynamic>? booking(Map<String, dynamic> service, String role) =>
 
 bool isBooked(Map<String, dynamic> service) => booking(service, 'primary')?['status'] == 'active';
 
+const selectedBookingStates = {'active', 'awaiting_confirmation', 'confirming', 'confirmation_failed', 'awaiting_changes'};
+bool isSelected(Map<String, dynamic> service) => selectedBookingStates.contains(booking(service, 'primary')?['status']);
+
 Map<String, dynamic>? vendorIn(Map<String, dynamic> service, String? id) =>
     rows(service['vendors']).where((v) => v['vendor_id'] == id).firstOrNull;
 
@@ -47,6 +50,11 @@ const vendorStatuses = {
   'renegotiating': ('Renegotiating…', Icons.handshake),
   'reconfirming': ('Rechecking prices…', Icons.fact_check_outlined),
   'approved': ('Booked', Icons.verified),
+  'confirmed': ('Confirmed', Icons.verified),
+  'awaiting_confirmation': ('Approved · awaiting confirmation', Icons.pending_actions),
+  'confirming': ('Confirming booking…', Icons.phone_in_talk),
+  'confirmation_failed': ('Confirmation needed', Icons.phone_missed),
+  'awaiting_changes': ('Changed terms · review needed', Icons.pending_actions),
   'standby': ('Backup on standby', Icons.shield_outlined),
   'rejected': ('Rejected', Icons.block),
   'replaced': ('Replaced by backup', Icons.swap_horiz),

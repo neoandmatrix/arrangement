@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../call_actions.dart';
+import '../family/confirmation_summary.dart';
+import '../family/view_helpers.dart';
 import '../format.dart';
 import '../settings.dart';
 import '../setup_screen.dart';
@@ -119,6 +121,11 @@ const _enquiryText = {
   'callback': 'Call back later',
   'renegotiating': 'Calling about your quote',
   'approved': 'Booked!',
+  'confirmed': 'Booking confirmed',
+  'awaiting_confirmation': 'The family approved you; booking confirmation is pending',
+  'confirming': 'Confirming the family-approved booking terms',
+  'confirmation_failed': 'Booking confirmation is still needed',
+  'awaiting_changes': 'Changed terms are awaiting family review',
   'standby': 'On standby as backup',
   'rejected': 'The family chose someone else',
 };
@@ -137,6 +144,8 @@ class _JobCard extends StatelessWidget {
     final booking = jobs['booking'] as Map<String, dynamic>?;
     final checkins = (jobs['checkins'] as List?) ?? [];
     final updates = (jobs['updates'] as List?) ?? [];
+    final confirmation = jobs['confirmation'] as Map<String, dynamic>?;
+    final confirmed = confirmation?['status'] == 'confirmed' && booking?['status'] == 'active';
     final theme = Theme.of(context);
     return Card(
       child: Padding(
@@ -160,7 +169,10 @@ class _JobCard extends StatelessWidget {
             ],
             if (booking != null) ...[
               const SizedBox(height: 8),
-              Chip(label: Text(booking['role'] == 'primary' ? 'Booked (${booking['status']})' : 'Backup (${booking['status']})')),
+              Chip(label: Text(booking['role'] == 'primary'
+                  ? (confirmed ? 'Booking confirmed' : 'Selected · ${booking['status']}')
+                  : 'Backup (${booking['status']})')),
+              if (confirmation != null) ConfirmationSummary(confirmation: confirmation),
             ],
             if (enquiry != null) ...[
               const SizedBox(height: 12),
@@ -174,7 +186,7 @@ class _JobCard extends StatelessWidget {
               const Text('Report a revised rate, cancellation, delay or another update. New rates need the family’s approval.',
                   style: TextStyle(fontSize: 12)),
             ],
-            if (booking?['role'] == 'primary' && booking?['status'] == 'active' && event['family_id'] != null) ...[
+            if (booking?['role'] == 'primary' && selectedBookingStates.contains(booking?['status']) && event['family_id'] != null) ...[
               const SizedBox(height: 8),
               OutlinedButton.icon(
                 onPressed: () => callPerson(context, event['family_id'] as String, '${event['family']} family'),

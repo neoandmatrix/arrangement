@@ -9,6 +9,7 @@ import rules
 import store
 import workflow
 from price_fixture import checked_quote
+from confirmation_fixture import book_confirmed
 
 BRIEF = prompts.SAMPLE_BRIEF  # 40 guests, muhurat 2026-11-15 07:30
 
@@ -156,7 +157,7 @@ class WorkflowTest(unittest.TestCase):
     def test_booking_then_cancellation_switches_to_backup(self):
         store.save_quote(self.event_id, "C06", None, caterer_quote(price_amount=500))
         store.save_quote(self.event_id, "C02", None, caterer_quote(price_amount=480))
-        result = workflow.book("caterer")
+        result = book_confirmed("caterer")
         self.assertEqual(result["primary"], "C02")
         self.assertEqual(result["backup"], "C06")
 

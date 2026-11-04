@@ -104,6 +104,20 @@ CREATE TABLE IF NOT EXISTS vendor_updates (
     data TEXT NOT NULL,
     status TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS booking_confirmations (
+    id INTEGER PRIMARY KEY,
+    event_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    vendor_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    terms TEXT NOT NULL,
+    approved_quote TEXT NOT NULL,
+    answers TEXT NOT NULL,
+    call_id TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -286,6 +300,96 @@ def bookings(event_id: int) -> list[dict[str, Any]]:
             "SELECT * FROM bookings WHERE event_id = ? ORDER BY category, role DESC", (event_id,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _confirmation(row) -> dict[str, Any] | None:
+    return {**dict(row), **{key: json.loads(row[key]) for key in ("terms", "approved_quote", "answers")}} if row else None
+
+
+def confirmation(confirmation_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM booking_confirmations WHERE id = ?", (confirmation_id,)).fetchone()
+    if not row:
+        raise LookupError("No such booking confirmation")
+    return _confirmation(row)
+
+
+def latest_confirmation(event_id: int, category: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM booking_confirmations WHERE event_id = ? AND category = ? ORDER BY id DESC LIMIT 1", (event_id, category)).fetchone()
+    return _confirmation(row)
+
+
+def confirmations(event_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM booking_confirmations WHERE event_id = ? ORDER BY id DESC", (event_id,)).fetchall()
+    return [_confirmation(row) for row in rows]
+
+
+def add_confirmation(event_id: int, category: str, vendor_id: str, terms: dict, quote: dict) -> int:
+    with connect() as conn:
+        conn.execute("UPDATE booking_confirmations SET status = 'superseded', updated_at = ? WHERE event_id = ? AND category = ? AND status IN ('pending', 'calling', 'changed')", (now(), event_id, category))
+        cur = conn.execute("""INSERT INTO booking_confirmations
+            (event_id, category, vendor_id, status, terms, approved_quote, answers, created_at, updated_at)
+            VALUES (?, ?, ?, 'pending', ?, ?, '[]', ?, ?)""",
+            (event_id, category, vendor_id, json.dumps(terms, ensure_ascii=False), json.dumps(quote, ensure_ascii=False), now(), now()))
+        return cur.lastrowid
+
+
+def set_confirmation(confirmation_id: int, status: str, *, call_id: str | None = None, reason: str | None = None) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE booking_confirmations SET status = ?, call_id = COALESCE(?, call_id), reason = ?, updated_at = ? WHERE id = ?",
+                     (status, call_id, reason, now(), confirmation_id))
+
+
+def claim_confirmation(confirmation_id: int) -> bool:
+    with connect() as conn:
+        return conn.execute("UPDATE booking_confirmations SET status = 'calling', updated_at = ? WHERE id = ? AND status = 'pending'", (now(), confirmation_id)).rowcount == 1
+
+
+def add_confirmation_answer(confirmation_id: int, call_id: str, index: int, answer: dict) -> bool:
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT answers FROM booking_confirmations WHERE id = ? AND call_id = ? AND status = 'calling'", (confirmation_id, call_id)).fetchone()
+        if not row:
+            return False
+        answers = json.loads(row["answers"])
+        if len(answers) != index:
+            return False
+        answers.append(answer)
+        conn.execute("UPDATE booking_confirmations SET answers = ?, updated_at = ? WHERE id = ?", (json.dumps(answers, ensure_ascii=False), now(), confirmation_id))
+        return True
+
+
+def complete_confirmation(confirmation_id: int, call_id: str, answer_count: int, schedule: list[tuple[str, str]], message: str) -> bool:
+    """Confirmation, booking activation and check-ins commit together, including across a crash."""
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute("SELECT * FROM booking_confirmations WHERE id = ? AND call_id = ? AND status = 'calling'", (confirmation_id, call_id)).fetchone()
+        if not row or len(json.loads(row['answers'])) != answer_count:
+            return False
+        latest = conn.execute('SELECT MAX(id) AS id FROM booking_confirmations WHERE event_id = ? AND category = ?', (row['event_id'], row['category'])).fetchone()
+        primary = conn.execute("SELECT vendor_id, status FROM bookings WHERE event_id = ? AND category = ? AND role = 'primary'", (row['event_id'], row['category'])).fetchone()
+        if latest['id'] != confirmation_id or not primary or primary['vendor_id'] != row['vendor_id'] or primary['status'] != 'confirming':
+            return False
+        conn.execute("UPDATE booking_confirmations SET status = 'confirmed', updated_at = ? WHERE id = ?", (now(), confirmation_id))
+        conn.execute("UPDATE bookings SET status = 'active' WHERE event_id = ? AND category = ? AND role = 'primary'", (row['event_id'], row['category']))
+        conn.execute("UPDATE enquiries SET status = 'confirmed', updated_at = ? WHERE event_id = ? AND vendor_id = ?", (now(), row['event_id'], row['vendor_id']))
+        conn.execute("DELETE FROM checkins WHERE event_id = ? AND category = ? AND status = 'pending'", (row['event_id'], row['category']))
+        conn.executemany("INSERT INTO checkins (event_id, vendor_id, category, label, due_at, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+            [(row['event_id'], row['vendor_id'], row['category'], label, due) for label, due in schedule])
+        conn.execute('INSERT INTO alerts (event_id, created_at, level, message) VALUES (?, ?, ?, ?)', (row['event_id'], now(), 'info', message))
+        return True
+
+
+def clear_pending_checkins(event_id: int, category: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM checkins WHERE event_id = ? AND category = ? AND status = 'pending'", (event_id, category))
+
+
+def clear_vendor_pending_checkins(event_id: int, category: str, vendor_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM checkins WHERE event_id = ? AND category = ? AND vendor_id = ? AND status = 'pending'", (event_id, category, vendor_id))
 
 
 # Check-ins

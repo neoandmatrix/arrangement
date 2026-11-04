@@ -3,20 +3,28 @@ import 'package:flutter/material.dart';
 import '../call_actions.dart';
 import 'quote_details.dart';
 import 'view_helpers.dart';
+import 'confirmation_summary.dart';
 
 class BookingCard extends StatelessWidget {
-  const BookingCard({super.key, required this.service, required this.checkins, required this.onQuotes, required this.onCheckin, this.onReconfirm, this.rechecking = false});
+  const BookingCard({super.key, required this.service, required this.checkins, required this.onQuotes, required this.onCheckin, this.onReconfirm, this.onConfirm, this.onCancel, this.rechecking = false, this.reviewPending = false});
   final Map<String, dynamic> service;
   final List<Map<String, dynamic>> checkins;
   final VoidCallback onQuotes;
   final Future<void> Function(int) onCheckin;
   final VoidCallback? onReconfirm;
   final bool rechecking;
+  final VoidCallback? onConfirm;
+  final VoidCallback? onCancel;
+  final bool reviewPending;
 
   @override
   Widget build(BuildContext context) {
     final primary = booking(service, 'primary');
     final active = isBooked(service);
+    final selected = isSelected(service);
+    final confirmation = primary?['confirmation'] as Map<String, dynamic>?;
+    final confirmed = active && confirmation?['status'] == 'confirmed';
+    final state = primary?['status'];
     final vendor = vendorIn(service, primary?['vendor_id'] as String?);
     final backup = booking(service, 'backup');
     final standby = backup?['status'] == 'standby';
@@ -32,14 +40,24 @@ class BookingCard extends StatelessWidget {
             Icon(serviceIcon(service['category']), color: Theme.of(context).colorScheme.primary),
             const SizedBox(width: 8),
             Expanded(child: Text('${service['name']}', style: Theme.of(context).textTheme.titleMedium)),
-            Text(active ? 'Booked' : primary?['status'] == 'cancelled' ? 'Cancelled' : 'Not booked',
-                style: TextStyle(fontSize: 12, color: active ? Colors.green.shade800 : Theme.of(context).colorScheme.secondary)),
+            Flexible(child: Text(confirmed ? 'Confirmed' : active ? 'Booked' : selected ? 'Awaiting confirmation' : state == 'cancelled' ? 'Cancelled' : state == 'declined' ? 'Declined' : 'Not booked',
+                textAlign: TextAlign.end, style: TextStyle(fontSize: 12, color: confirmed ? Colors.green.shade800 : Theme.of(context).colorScheme.secondary))),
           ]),
           const SizedBox(height: 12),
-          if (active) ...[
+          if (selected) ...[
             Text('${vendor?['name'] ?? primary?['vendor_id']}', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
             if (vendor != null) QuoteAmount(vendor: vendor),
+            if (!confirmed) Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(state == 'confirming' ? 'Bandobast is confirming the approved terms with the vendor.'
+                  : state == 'awaiting_changes' ? 'The vendor changed terms. Review the request before booking can be confirmed.'
+                  : 'The family approved this vendor, but spoken booking confirmation is still needed.', style: const TextStyle(fontSize: 13)),
+            ),
+            if (confirmation?['reason'] != null) Text('${confirmation!['reason']}', style: Theme.of(context).textTheme.bodySmall),
+            if (!confirmed && state != 'confirming' && !reviewPending && vendor?['needs_price_reconfirmation'] != true && onConfirm != null)
+              FilledButton.tonalIcon(onPressed: rechecking ? null : onConfirm, icon: const Icon(Icons.phone_callback), label: Text(confirmation == null || confirmation['status'] == 'pending' ? 'Confirm booking' : 'Retry confirmation')),
+            if (!active && onCancel != null) TextButton(onPressed: rechecking ? null : onCancel, child: const Text('Cancel this selection')),
             const SizedBox(height: 8),
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Icon(standby ? Icons.shield_outlined : Icons.info_outline, size: 18, color: Theme.of(context).colorScheme.secondary),
@@ -56,7 +74,8 @@ class BookingCard extends StatelessWidget {
               icon: const Icon(Icons.call), label: const Text('Call vendor'),
             ),
             if (vendor != null) QuoteDetails(vendor: vendor),
-            if (pending.isNotEmpty) ExpansionTile(
+            if (confirmation != null) ConfirmationSummary(confirmation: confirmation),
+            if (confirmed && pending.isNotEmpty) ExpansionTile(
               tilePadding: EdgeInsets.zero,
               title: Text('Follow-up calls (${pending.length})'),
               subtitle: Text('Next pending: ${shortDateTime(pending.first['due_at'])}'),

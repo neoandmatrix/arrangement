@@ -20,6 +20,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPI
 import channels
 import push
 import store
+import confirmation_rules
 from conversation import SessionConfig, run_conversation
 
 api = APIRouter()
@@ -57,7 +58,7 @@ def direct_allowed(caller: str, target: str, event_id: int) -> bool:
     if not family or caller == target or family not in (caller, target):
         return False
     vendor = target if caller == family else caller
-    return any(b["vendor_id"] == vendor and b["role"] == "primary" and b["status"] == "active"
+    return any(b["vendor_id"] == vendor and b["role"] == "primary" and b["status"] in confirmation_rules.RESERVED
                for b in store.bookings(event_id))
 
 

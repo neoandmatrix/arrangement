@@ -10,7 +10,7 @@ import 'view_helpers.dart';
 /// Three focused views of one occasion; changing tabs never changes bookings or rankings.
 class FamilyDashboard extends StatefulWidget {
   const FamilyDashboard({super.key, required this.state, required this.familyId, required this.busy,
-    required this.onRefresh, required this.onAct, required this.onCheckin, this.error});
+    required this.onRefresh, required this.onAct, required this.onCheckin, this.onCancel, this.error});
   final Map<String, dynamic> state;
   final String familyId;
   final Set<String> busy;
@@ -18,6 +18,7 @@ class FamilyDashboard extends StatefulWidget {
   final Future<void> Function(String, String, String) onAct;
   final Future<void> Function(int) onCheckin;
   final String? error;
+  final Future<void> Function(String)? onCancel;
 
   @override
   State<FamilyDashboard> createState() => _FamilyDashboardState();
@@ -35,7 +36,7 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 3, vsync: this, initialIndex: _pending.isNotEmpty || _services.any(isBooked) ? 0 : 1);
+    _tabs = TabController(length: 3, vsync: this, initialIndex: _pending.isNotEmpty || _services.any(isSelected) ? 0 : 1);
     _category = _services.firstOrNull?['category'] as String?;
   }
 
@@ -44,7 +45,7 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
     super.didUpdateWidget(oldWidget);
     if ((oldWidget.state['event'] as Map?)?['id'] != (widget.state['event'] as Map?)?['id']) {
       _category = _services.firstOrNull?['category'] as String?;
-      _tabs.index = _pending.isNotEmpty || _services.any(isBooked) ? 0 : 1;
+      _tabs.index = _pending.isNotEmpty || _services.any(isSelected) ? 0 : 1;
       if (_bookingScroll.hasClients) _bookingScroll.jumpTo(0);
     } else if (!_services.any((s) => s['category'] == _category)) {
       _category = _services.firstOrNull?['category'] as String?;
@@ -98,10 +99,16 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
             key: ValueKey(service['category']), service: service, checkins: checkins,
             onQuotes: () => _quotes(service['category'] as String), onCheckin: widget.onCheckin,
             rechecking: widget.busy.contains(booking(service, 'primary')?['vendor_id']),
+            reviewPending: _pending.any((u) => u['vendor_id'] == booking(service, 'primary')?['vendor_id']),
             onReconfirm: () {
               final id = booking(service, 'primary')?['vendor_id'] as String?;
               if (id != null) widget.onAct(id, 'reconfirm', 'Bandobast will recheck the booked vendor’s charges; agreed terms will not change without your approval');
             },
+            onConfirm: () {
+              final id = booking(service, 'primary')?['vendor_id'] as String?;
+              if (id != null) widget.onAct(id, 'confirm', 'Booking confirmation call requested');
+            },
+            onCancel: widget.onCancel == null ? null : () => widget.onCancel!(service['category'] as String),
           ),
         ]),
         _page('quotes', [

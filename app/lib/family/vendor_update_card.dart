@@ -38,6 +38,7 @@ class _VendorUpdateCardState extends State<VendorUpdateCard> {
     final flags = ((data['flags'] as List?) ?? []).cast<Map<String, dynamic>>();
     final blocked = flags.any((f) => f['level'] == 'block');
     final correction = u['kind'] == 'quote';
+    final eventChange = u['kind'] == 'confirmation_change';
     String name = '${u['vendor_id']}';
     for (final s in widget.services) {
       for (final v in (s['vendors'] as List)) {
@@ -51,6 +52,10 @@ class _VendorUpdateCardState extends State<VendorUpdateCard> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('${correction ? 'Corrected quote from' : 'Update from'} $name', style: Theme.of(context).textTheme.titleMedium),
           Text('${data['notes']}'),
+          if (eventChange) ...[
+            Text('${data['review_note'] ?? 'Review this booking change before retrying confirmation.'}', style: Theme.of(context).textTheme.bodySmall),
+            TextButton(onPressed: _busy ? null : () => _decide('reject'), child: const Text('Reject change · retry original terms')),
+          ],
           if (quote != null) ...[
             const SizedBox(height: 6),
             if (!correction) Text('${quotedMoney(data['previous_price'])} → ${quotedMoney(quote['price_amount'])}'

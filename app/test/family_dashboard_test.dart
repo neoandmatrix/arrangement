@@ -13,7 +13,12 @@ Map<String, dynamic> fixture({bool pending = false}) => {
   'services': [
     {
       'category': 'priest', 'name': 'Priest', 'negotiable': false, 'budget': 80000,
-      'booking': {'primary': {'vendor_id': 'P01', 'status': 'active'}}, 'discovered': [],
+      'booking': {'primary': {'vendor_id': 'P01', 'status': 'active', 'confirmation': {
+        'id': 1, 'status': 'confirmed', 'updated_at': '2026-11-04T09:00:00',
+        'terms': {'function': 'Rudrabhishek', 'family': 'Demo', 'date': '2026-11-05', 'start_time': '09:00',
+          'arrive_by': '2026-11-05T08:30', 'area': 'Whitefield', 'city': 'Bengaluru', 'guests': 40, 'total': 572000,
+          'quote': {'price_amount': 67000, 'price_unit': 'total', 'transport_charge': 500000, 'extra_charges_amount': 5000, 'advance_amount': 500000}},
+      }}}, 'discovered': [],
       'vendors': [
         {'vendor_id': 'P01', 'name': 'Demo Pandit', 'area': 'Whitefield', 'language': 'te-IN', 'rating': 4.5,
           'review_count': 97, 'distance_km': 0.2, 'status': 'approved', 'landed_cost': 572000, 'savings': 49933000,
@@ -175,6 +180,49 @@ void main() {
     await tester.tap(find.text('Call now'));
     await tester.pumpAndSettle();
     expect(called, [1]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('approved vendor stays selected but unconfirmed and has no follow-up actions', (tester) async {
+    final state = fixture();
+    final service = (state['services'] as List).first as Map<String, dynamic>;
+    final primary = (service['booking'] as Map)['primary'] as Map<String, dynamic>;
+    primary['status'] = 'awaiting_confirmation';
+    (primary['confirmation'] as Map)['status'] = 'pending';
+    await tester.pumpWidget(dashboard(state));
+    expect(find.text('Awaiting confirmation'), findsOneWidget);
+    expect(find.text('Confirm booking'), findsOneWidget);
+    expect(find.text('Follow-up calls (1)'), findsNothing);
+    await tester.tap(find.text('Quotes'));
+    await tester.pumpAndSettle();
+    expect(find.text('Vendor selected · view confirmation'), findsOneWidget);
+    expect(find.text('Approve'), findsNothing); // another priest cannot be approved during confirmation
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('missed confirmation offers a retry action for the same approved vendor', (tester) async {
+    final state = fixture();
+    final service = (state['services'] as List).first as Map<String, dynamic>;
+    final primary = (service['booking'] as Map)['primary'] as Map<String, dynamic>;
+    primary['status'] = 'confirmation_failed';
+    (primary['confirmation'] as Map)['status'] = 'no_answer';
+    final actions = <String>[];
+    await tester.pumpWidget(dashboard(state, act: (id, action, _) => actions.add('$id:$action')));
+    await tester.ensureVisible(find.text('Retry confirmation'));
+    await tester.tap(find.text('Retry confirmation'));
+    await tester.pumpAndSettle();
+    expect(actions, ['P01:confirm']);
+  });
+
+  testWidgets('confirmed summary exposes the approved date, advance and arrival deadline', (tester) async {
+    await tester.pumpWidget(dashboard(fixture()));
+    await tester.ensureVisible(find.text('Confirmed booking summary'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirmed booking summary'));
+    await tester.pumpAndSettle();
+    expect(find.text('Arrival / setup'), findsOneWidget);
+    expect(find.text('Advance'), findsOneWidget);
+    expect(find.text('Confirmed'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 }

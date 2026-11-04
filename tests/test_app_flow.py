@@ -51,7 +51,7 @@ class FamilyChoiceTest(unittest.TestCase):
         result = workflow.book("cake", "K01")
         self.assertEqual(result["primary"], "K01")
         self.assertIn(result["backup"], ("K03", "K02"))
-        self.assertEqual(store.enquiry(self.event_id, "K01")["status"], "approved")
+        self.assertEqual(store.enquiry(self.event_id, "K01")["status"], "awaiting_confirmation")
         with self.assertRaises(ValueError):
             workflow.book("cake", "K03")  # already booked
 

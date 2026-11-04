@@ -20,6 +20,7 @@ import prompts
 import store
 import workflow
 from price_fixture import checked_quote
+from confirmation_fixture import book_confirmed
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, InterruptionFrame
 
 
@@ -38,7 +39,7 @@ class AppAudioTest(unittest.TestCase):
         for vendor_id, price in (("K01", 2400), ("K03", 2600)):
             store.save_quote(self.event_id, vendor_id, None, checked_quote({"available": True, "price_amount": price,
                 "price_unit": "total", "transport_charge": 0, "advance_amount": 500}, "cake"))
-        workflow.book("cake", "K01")
+        book_confirmed("cake", "K01")
         @asynccontextmanager
         async def lifespan(app):
             yield

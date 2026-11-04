@@ -38,6 +38,8 @@ List<Map<String, dynamic>> timelineEntries({required List<Map<String, dynamic>> 
     entries.add({
       'key': 'alert-${alert['id']}', 'time': alert['created_at'],
       'title': approved ? 'Price revision approved' : rejected ? 'Price revision rejected'
+          : message.contains('confirmed the') && message.contains('booking') ? 'Booking confirmed'
+          : message.contains('vendor booking confirmation is pending') ? 'Vendor approved · confirmation pending'
           : message.contains('Switched to backup') ? 'Backup activated'
           : alert['level'] == 'critical' ? 'Booking needs attention' : message.startsWith('Booked ') ? 'Vendor booked' : 'Booking update',
       'detail': approved || rejected ? message.replaceFirst(RegExp(r'^(Approved|Rejected) revised price from '), '').replaceFirst(RegExp(r'\.$'), '') : message,

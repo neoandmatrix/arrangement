@@ -79,6 +79,22 @@ class _FunctionScreenState extends State<FunctionScreen> {
     }
   }
 
+  Future<void> _cancelSelection(String category) async {
+    final approved = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+      title: const Text('Cancel this selection?'),
+      content: const Text('This vendor has not confirmed the booking. You can choose another quote afterwards.'),
+      actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep selection')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Cancel selection'))],
+    ));
+    if (approved != true) return;
+    try {
+      await Api.post('/events/current/bookings/$category/cancel');
+      await _load();
+    } catch (error) {
+      _snack('$error');
+    }
+  }
+
   void _snack(String text) {
     if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
@@ -108,7 +124,7 @@ class _FunctionScreenState extends State<FunctionScreen> {
           : event == null
               ? _empty(context)
               : FamilyDashboard(state: _state!, familyId: Settings.familyId, error: _error,
-                  busy: _busy, onRefresh: _load, onAct: _act, onCheckin: _checkin),
+                  busy: _busy, onRefresh: _load, onAct: _act, onCheckin: _checkin, onCancel: _cancelSelection),
     );
   }
 

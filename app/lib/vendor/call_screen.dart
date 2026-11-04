@@ -80,6 +80,12 @@ class _CallScreenState extends State<CallScreen> {
           : 'Your answers are filling the form. You can review and edit afterwards.');
     } else if (message['type'] == 'update_saved') {
       setState(() => _notice = 'Update sent to the family. Price changes still need their approval.');
+    } else if (message['type'] == 'booking_confirmed') {
+      setState(() => _notice = 'Booking confirmed. The agreed terms are saved for both sides.');
+    } else if (message['type'] == 'booking_pending_review') {
+      setState(() => _notice = 'Changed terms need family review. The booking is not confirmed.');
+    } else if (message['type'] == 'booking_declined') {
+      setState(() => _notice = 'Booking declined or withdrawn. The family has been notified.');
     } else if (message['type'] == 'audio_ready' && message['echoCancellation'] != true) {
       setState(() => _notice ??= 'Use the earpiece or headphones to reduce echo on this phone.');
     }

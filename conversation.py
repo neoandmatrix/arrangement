@@ -25,6 +25,9 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMRunFrame,
     LLMTextFrame,
+    LLMContextFrame,
+    TTSSpeakFrame,
+    TTSStoppedFrame,
 )
 from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.pipeline import Pipeline
@@ -51,16 +54,18 @@ import price_safety
 import rules
 import store
 import workflow
+import confirmation_rules
+import confirmations
 
 # Timbre v3.0 voices speak all 10 languages, so one voice works for every vendor.
 TTS_MODEL = "timbre-v3.0"
 TTS_VOICE = "Shivani"
 
-MODES = ("intake", "vendor_call", "checkin", "form", "vendor_update")
+MODES = ("intake", "vendor_call", "checkin", "form", "vendor_update", "confirmation")
 
 CALL_CONNECTED = "[The call has connected and the other person has picked up. Say your greeting now.]"
 
-TOOL_NAMES = ("end_call", "save_brief", "record_quote", "record_checkin", "fill_form", "record_update")
+TOOL_NAMES = ("end_call", "save_brief", "record_quote", "record_checkin", "fill_form", "record_update", "start_confirmation", "record_confirmation")
 
 
 @dataclass
@@ -69,6 +74,7 @@ class SessionConfig:
     channel: str  # "phone" | "browser"
     vendor_id: str | None = None
     checkin_id: int | None = None
+    confirmation_id: int | None = None
     renegotiate: bool = False  # vendor_call: calling back about their quote, at the family's request
     reconfirm: bool = False  # verification of quote charges, not confirmation of a booking
     event_id: int | None = None
@@ -88,9 +94,10 @@ class SessionConfig:
             channel=channel,
             vendor_id=data.get("vendor_id") or None,
             checkin_id=int(checkin_id) if checkin_id not in (None, "") else None,
+            confirmation_id=int(data['confirmation_id']) if data.get('confirmation_id') not in (None, '') else None,
             renegotiate=str(data.get("renegotiate", "")).lower() in ("1", "true"),
             reconfirm=str(data.get("reconfirm", "")).lower() in ("1", "true"),
-            event_id=data.get("event_id"),
+            event_id=int(data['event_id']) if data.get('event_id') not in (None, '') else None,
             language=data.get("language", "hi-IN"),
             draft=dict(data.get("draft") or {}),
         )
@@ -116,7 +123,7 @@ END_CALL = FunctionSchema(
 
 # What each conversation must record before it may hang up.
 REQUIRED_RESULT = {"intake": "save_brief", "vendor_call": "record_quote", "checkin": "record_checkin",
-                   "form": "fill_form", "vendor_update": "record_update"}
+                   "form": "fill_form", "vendor_update": "record_update", "confirmation": "record_confirmation"}
 
 SAVE_BRIEF = FunctionSchema(
     name="save_brief",
@@ -206,6 +213,19 @@ RECORD_UPDATE = FunctionSchema(
     required=["kind", "notes"],
 )
 
+START_CONFIRMATION = FunctionSchema(name='start_confirmation',
+    description='After the greeting is answered, start the code-generated read-back of the family-approved booking terms. Do not speak these questions yourself.',
+    properties={}, required=[])
+
+RECORD_CONFIRMATION = FunctionSchema(name='record_confirmation',
+    description='Process their answer to the last code-generated question. Code validates a spoken yes before advancing. A change or refusal never confirms a booking.',
+    properties={
+        'status': {'type': 'string', 'enum': ['agreed', 'changed', 'declined', 'callback', 'repeat', 'ai_disclosure']},
+        'change_type': {'type': ['string', 'null'], 'enum': ['quote', 'event', None],
+                        'description': 'For changes: quote = price/advance/service coverage; event = date/time/venue change.'},
+        'notes': {'type': ['string', 'null'], 'description': 'What changed, why declined, or the requested callback time.'},
+    }, required=['status'])
+
 
 def make_llm() -> OpenRouterLLMService | GroqLLMService:
     """Groq by default (lowest latency); LLM_PROVIDER=openrouter for Gemini Flash via OpenRouter."""
@@ -239,6 +259,17 @@ def _plan(cfg: SessionConfig) -> tuple[str, list[FunctionSchema], str, int | Non
 
     if cfg.mode == "form":
         return prompts.form_prompt(cfg.language, cfg.draft), [FILL_FORM, END_CALL], cfg.language, None
+
+    if cfg.mode == 'confirmation':
+        if not cfg.confirmation_id:
+            raise ValueError('Booking confirmation ID is required')
+        record = store.confirmation(cfg.confirmation_id)
+        if cfg.vendor_id not in (None, record['vendor_id']) or cfg.event_id not in (None, record['event_id']):
+            raise ValueError('Wrong vendor or function for this confirmation')
+        cfg.vendor_id, cfg.event_id = record['vendor_id'], record['event_id']
+        confirmations.bind(cfg.confirmation_id, cfg.call_id, vendor_id=cfg.vendor_id, event_id=cfg.event_id)
+        vendor = store.vendor(cfg.vendor_id)
+        return prompts.confirmation_prompt(vendor, record['terms']), [START_CONFIRMATION, RECORD_CONFIRMATION, RECORD_QUOTE, END_CALL], vendor['language'], cfg.event_id
 
     event_id, brief = store.event(cfg.event_id) if cfg.event_id else workflow.require_event()
     if cfg.mode == "vendor_update":
@@ -304,8 +335,11 @@ async def run_conversation(
         tools=ToolsSchema(standard_tools=tools),
     )
     outcome: dict[str, Any] = {}
+    confirmation_state: dict[str, Any] = {'controlled': False, 'started': False, 'index': 0, 'ready_turn': None, 'tts_context': None}
+    booking_record = store.confirmation(cfg.confirmation_id) if cfg.mode == 'confirmation' else None
+    booking_questions = confirmation_rules.questions(booking_record['terms'], language) if booking_record else []
     draft = dict(cfg.draft)
-    previous_quote = store.latest_quotes(event_id).get(cfg.vendor_id) if cfg.renegotiate or cfg.reconfirm else None
+    previous_quote = booking_record['approved_quote'] if booking_record else store.latest_quotes(event_id).get(cfg.vendor_id) if cfg.renegotiate or cfg.reconfirm else None
     if previous_quote and previous_quote.get("initial_price_verified") is True and not price_safety.issues(previous_quote, store.event(event_id)[1], store.vendor(cfg.vendor_id)["category"]):
         opening = previous_quote.get("opening_quote")
         if isinstance(opening, dict) and not price_safety.issues(opening, store.event(event_id)[1], store.vendor(cfg.vendor_id)["category"]):
@@ -317,7 +351,139 @@ async def run_conversation(
     def other_side_has_spoken() -> bool:
         return user_turns() > 0
 
-    question_gate = OneQuestionPerTurn(user_turns=user_turns, english_ok=language == "en-IN")
+    question_gate = OneQuestionPerTurn(user_turns=user_turns, english_ok=language == "en-IN", tool_only=lambda: confirmation_state['controlled'])
+
+    if booking_record:
+        @tts.event_handler('on_tts_request')
+        async def on_confirmation_tts(_tts, context_id, text):
+            expected = confirmation_state.get('question', '')
+            if expected and ' '.join(text.split()) == ' '.join(expected.split()):
+                confirmation_state['tts_context'] = context_id
+
+    async def ask_approved_question() -> None:
+        index = confirmation_state['index']
+        text = booking_questions[index]['text']
+        confirmation_state.update(question=text, ready_turn=None, tts_context=None, controlled=True)
+        context.add_message({'role': 'assistant', 'content': text})
+        question_gate.mark_question()
+        frame = TTSSpeakFrame(text, append_to_context=False)
+        frame.interruptible = False
+        await task.queue_frames([frame])
+
+    async def start_confirmation(fn: FunctionCallParams) -> None:
+        if await answer_pending(fn):
+            return
+        if not other_side_has_spoken():
+            await reject(fn, ['Greet the vendor and wait for their answer before starting'])
+            return
+        try:
+            confirmations.current(cfg.confirmation_id)
+        except ValueError as error:
+            await reject(fn, [str(error)])
+            return
+        if confirmation_state['started']:
+            await fn.result_callback({'ok': False, 'error': 'Already started; process the latest answer, do not restart.'}, properties=FunctionCallResultProperties(run_llm=False))
+            return
+        confirmation_state['started'] = True
+        await ask_approved_question()
+        await fn.result_callback({'ok': True, 'next': 'The approved question is being spoken. Wait for their answer, then call record_confirmation.'}, properties=FunctionCallResultProperties(run_llm=False))
+
+    async def advance_confirmation(*, run_llm_when_complete: bool = False) -> bool:
+        if not confirmation_state['started'] or confirmation_state['ready_turn'] is None:
+            raise ValueError('Start the approved read-back and wait for the question to finish before accepting an answer')
+        last = next(m for m in reversed(context.get_messages()) if _is_spoken_turn(m) and m['role'] == 'user')
+        complete = confirmations.accept_answer(cfg.confirmation_id, cfg.call_id, confirmation_state['index'], _text(last),
+            user_turn=user_turns(), ready_turn=confirmation_state['ready_turn'], question=confirmation_state['question'], tts_context=confirmation_state['tts_context'])
+        if complete:
+            confirmation_state['controlled'] = False
+            mark_recorded('record_confirmation')
+            context.add_message({'role': 'system', 'content': 'Code confirmed every approved booking term. Tell the vendor the booking is confirmed, say goodbye and end_call. If the vendor now changes or withdraws terms, record changed or declined instead; do not ignore a last-minute revision.'})
+            if cfg.on_result:
+                await cfg.on_result({'type': 'booking_confirmed', 'confirmation_id': cfg.confirmation_id})
+            if run_llm_when_complete:
+                await task.queue_frames([LLMRunFrame()])
+        else:
+            confirmation_state['index'] += 1
+            await ask_approved_question()
+        return complete
+
+    async def record_confirmation(fn: FunctionCallParams) -> None:
+        if await answer_pending(fn):
+            return
+        if not other_side_has_spoken():
+            await reject(fn, ['The vendor must speak first'])
+            return
+        status = fn.arguments.get('status')
+        notes = str(fn.arguments.get('notes') or '').strip()
+        try:
+            if status in ('repeat', 'ai_disclosure'):
+                record = store.confirmation(cfg.confirmation_id)
+                latest = store.latest_confirmation(event_id, record['category'])
+                if not latest or latest['id'] != cfg.confirmation_id:
+                    raise ValueError('The booking confirmation was superseded')
+                if status == 'ai_disclosure':
+                    text = confirmation_rules.DISCLOSURE.get(language, confirmation_rules.DISCLOSURE['en-IN'])
+                    context.add_message({'role': 'assistant', 'content': text})
+                    await task.queue_frames([TTSSpeakFrame(text, append_to_context=False)])
+                if record['status'] == 'confirmed':
+                    await fn.result_callback({'ok': True, 'next': 'The booking was already confirmed; answer honestly and end_call.'})
+                    return
+                if record['status'] != 'calling':
+                    await fn.result_callback({'ok': False, 'next': 'This booking is not confirmed. Continue collecting the revised quote if needed, otherwise say goodbye. Do not read back or confirm superseded terms.'})
+                    return
+                if not confirmation_state['started']:
+                    confirmation_state['started'] = True
+                await ask_approved_question()
+                await fn.result_callback({'ok': True, 'next': 'The approved question is repeated. Wait for their answer.'}, properties=FunctionCallResultProperties(run_llm=False))
+                return
+            if status == 'agreed':
+                complete = await advance_confirmation()
+                if complete:
+                    await fn.result_callback({'ok': True, 'next': 'All approved terms were confirmed. Tell them the booking is confirmed, say goodbye and end_call.'})
+                else:
+                    await fn.result_callback({'ok': True, 'next': 'Wait for their answer to the next approved question, then record_confirmation.'}, properties=FunctionCallResultProperties(run_llm=False))
+                return
+            if status not in ('changed', 'declined', 'callback') or not notes:
+                raise ValueError('Record what changed, why they declined, or when they requested a callback')
+            if status == 'changed':
+                change_type = fn.arguments.get('change_type')
+                if change_type not in ('quote', 'event'):
+                    raise ValueError('Identify whether quote terms or event date/time/venue changed')
+                update_id = confirmations.change(cfg.confirmation_id, cfg.call_id, notes, event_change=change_type == 'event')
+                confirmation_state.update(controlled=False, changed=True, change_notes=notes)
+                if cfg.on_result:
+                    await cfg.on_result({'type': 'booking_pending_review'})
+                if update_id:
+                    mark_recorded('record_confirmation')
+                    await fn.result_callback({'ok': True, 'next': 'The date/time/venue change was sent to the family. No booking is confirmed. Say goodbye and end_call.'})
+                else:
+                    await fn.result_callback({'ok': True, 'next': 'Collect the full revised quote and service coverage, one question at a time. Use record_quote; it must pass price checks and will wait for family approval. Do not negotiate or confirm the booking.'})
+                return
+            if store.confirmation(cfg.confirmation_id)['status'] == 'confirmed':
+                if status == 'declined':
+                    workflow.record_vendor_update(event_id, cfg.vendor_id, {'kind': 'cancelled', 'notes': notes}, _transcript(context), call_id=cfg.call_id)
+                else:
+                    confirmation_state['controlled'] = False
+                    await fn.result_callback({'ok': True, 'next': 'The booking was already confirmed; acknowledge their request to talk later, say goodbye and end_call.'})
+                    return
+            else:
+                confirmations.finish(cfg.confirmation_id, status, notes, call_id=cfg.call_id)
+            confirmation_state['controlled'] = False
+            mark_recorded('record_confirmation')
+            if status == 'declined' and cfg.on_result:
+                await cfg.on_result({'type': 'booking_declined'})
+            await fn.result_callback({'ok': True, 'next': 'No booking is confirmed. Say goodbye and end_call.'})
+        except (ValueError, LookupError) as error:
+            latest = store.latest_confirmation(event_id, store.vendor(cfg.vendor_id)['category'])
+            if not latest or latest['id'] != cfg.confirmation_id or store.confirmation(cfg.confirmation_id)['status'] != 'calling':
+                confirmation_state['controlled'] = False
+                outcome['end_reason'] = 'Booking confirmation was superseded or changed'
+                await fn.result_callback({'ok': False, 'error': str(error)}, properties=FunctionCallResultProperties(run_llm=False))
+                await fn.llm.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
+                return
+            if status == 'agreed' and confirmation_state['started'] and confirmation_state['ready_turn'] is not None:
+                await ask_approved_question()
+            await fn.result_callback({'ok': False, 'error': str(error), 'next': 'Do not claim confirmation. If the vendor changed terms use changed; if they need a callback record it.'}, properties=FunctionCallResultProperties(run_llm=False) if confirmation_state['controlled'] else None)
 
     async def answer_pending(fn: FunctionCallParams) -> bool:
         """Hard rule: no saving or hanging up while our question is unanswered (e.g. the read-back)."""
@@ -351,6 +517,8 @@ async def run_conversation(
             )
             return
         outcome["end_reason"] = fn.arguments.get("reason", "")
+        if cfg.mode == 'confirmation' and fn.arguments.get('callback_requested'):
+            confirmations.finish(cfg.confirmation_id, 'callback', outcome['end_reason'] or 'Vendor requested a callback', call_id=cfg.call_id)
         log.info(f"end_call: {outcome['end_reason']}")
         await fn.result_callback({"ok": True}, properties=FunctionCallResultProperties(run_llm=False))
         await fn.llm.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
@@ -461,10 +629,20 @@ async def run_conversation(
             quote["initial_price_unit"] = opening["price_unit"]
             quote["initial_price_verified"] = True
             quote["opening_quote"] = opening
-            if not cfg.reconfirm and await negotiate_first(fn, category, quote):
+            if cfg.mode != 'confirmation' and not cfg.reconfirm and await negotiate_first(fn, category, quote):
                 return
+        if cfg.mode == 'confirmation' and not confirmation_state.get('changed'):
+            await reject(fn, ['Use start_confirmation and record_confirmation for unchanged approved terms; record_quote is only for a reported change'])
+            return
         result = workflow.record_quote(event_id, cfg.vendor_id, cfg.call_id, quote)
         mark_recorded("record_quote")
+        if cfg.mode == 'confirmation':
+            if not result.get('update_id'):
+                update_id = store.save_update(event_id, cfg.vendor_id, 'confirmation_change', {
+                    'notes': confirmation_state.get('change_notes', 'Vendor reported a booking change without a full revised quote'),
+                    'confirmation_id': cfg.confirmation_id, 'review_note': 'No changed quote was provided. Review the request before retrying original booking terms.'}, 'pending')
+                result['update_id'] = update_id
+            mark_recorded('record_confirmation')
         log.info(f"record_quote {cfg.vendor_id}: {quote}")
         if result.get("update_id") and cfg.on_result:
             await cfg.on_result({"type": "update_saved", "update_id": result["update_id"]})
@@ -531,6 +709,8 @@ async def run_conversation(
         "record_checkin": record_checkin,
         "fill_form": fill_form,
         "record_update": record_update,
+        'start_confirmation': start_confirmation,
+        'record_confirmation': record_confirmation,
     }
     for tool in tools:
         llm.register_function(tool.name, handlers[tool.name])
@@ -547,10 +727,12 @@ async def run_conversation(
             transport.input(),
             stt,
             aggregators.user(),
+            *([ConfirmationAnswerRouter(confirmation_state, advance_confirmation)] if booking_record else []),
             llm,
             question_gate,
             tts,
             transport.output(),
+            *([ConfirmationSpeechTracker(confirmation_state, user_turns)] if booking_record else []),
             aggregators.assistant(),
         ]
     )
@@ -616,6 +798,48 @@ async def run_conversation(
             }
         )
         log.info("Call saved")
+        if booking_record:
+            confirmations.finish(cfg.confirmation_id, 'failed', outcome.get('last_error') or outcome.get('end_reason') or 'Call ended without confirmation', call_id=cfg.call_id)
+
+
+class ConfirmationSpeechTracker(FrameProcessor):
+    """A yes only counts after the exact code-approved question has reached the audio output."""
+
+    def __init__(self, state: dict[str, Any], user_turns: Callable[[], int]):
+        super().__init__()
+        self.state = state
+        self.user_turns = user_turns
+
+    def mark_delivery(self, context_id: str | None) -> bool:
+        if context_id and context_id == self.state.get('tts_context'):
+            self.state['ready_turn'] = self.user_turns()
+            return True
+        return False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TTSStoppedFrame) and direction == FrameDirection.DOWNSTREAM:
+            self.mark_delivery(frame.context_id)
+        await self.push_frame(frame, direction)
+
+
+class ConfirmationAnswerRouter(FrameProcessor):
+    """Clear completed yes-answers advance in code; only changes/unclear speech need another LLM call."""
+
+    def __init__(self, state: dict[str, Any], advance: Callable[..., Any]):
+        super().__init__()
+        self.state = state
+        self.advance = advance
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM and self.state['controlled']:
+            try:
+                await self.advance(run_llm_when_complete=True)
+                return
+            except (ValueError, LookupError):
+                pass  # The model extracts a change/refusal; it cannot bypass the same confirmation guards.
+        await self.push_frame(frame, direction)
 
 
 class QuestionGate:
@@ -690,13 +914,17 @@ class OneQuestionPerTurn(FrameProcessor):
     user_turns returns how many times the other person has spoken so far.
     """
 
-    def __init__(self, user_turns: Callable[[], int], *, english_ok: bool = True):
+    def __init__(self, user_turns: Callable[[], int], *, english_ok: bool = True, tool_only: Callable[[], bool] | None = None):
         super().__init__()
         self._user_turns = user_turns
         self._english_ok = english_ok
         self._replies = 0
         self._asked_at: int | None = None
         self._gate = QuestionGate()
+        self._tool_only = tool_only or (lambda: False)
+
+    def mark_question(self) -> None:
+        self._asked_at = self._user_turns()
 
     @property
     def awaiting_answer(self) -> bool:
@@ -711,13 +939,15 @@ class OneQuestionPerTurn(FrameProcessor):
             )
             self._replies += 1
         elif isinstance(frame, LLMTextFrame) and direction == FrameDirection.DOWNSTREAM:
+            if self._tool_only():
+                return
             text = self._gate.feed(frame.text)
             if self._gate.asked:
                 self._asked_at = self._user_turns()
             if not text:
                 return
             frame.text = text
-        elif isinstance(frame, LLMFullResponseEndFrame) and (text := self._gate.end()):
+        elif isinstance(frame, LLMFullResponseEndFrame) and not self._tool_only() and (text := self._gate.end()):
             await self.push_frame(LLMTextFrame(text), direction)
         await self.push_frame(frame, direction)
 

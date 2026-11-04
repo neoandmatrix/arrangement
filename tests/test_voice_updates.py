@@ -11,6 +11,7 @@ import store
 import workflow
 from conversation import SessionConfig, _plan, brief_problems
 from price_fixture import checked_quote
+from confirmation_fixture import book_confirmed
 
 
 class VendorUpdatesTest(unittest.TestCase):
@@ -25,7 +26,7 @@ class VendorUpdatesTest(unittest.TestCase):
                       "extra_charges_amount": 0, "advance_amount": 500, "initial_price_amount": 2500}, "cake")
         for vendor_id, price in (("K01", 2400), ("K03", 2600)):
             store.save_quote(self.event_id, vendor_id, None, checked_quote({**self.quote, "price_amount": price}, "cake"))
-        workflow.book("cake", "K01")
+        book_confirmed("cake", "K01")
 
     def tearDown(self):
         store.DB_PATH = self.original_db

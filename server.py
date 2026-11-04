@@ -22,6 +22,8 @@ from twilio.twiml.voice_response import Connect, VoiceResponse
 
 import app_api
 import app_calls
+import enquiries
+import confirmations
 import browser
 import catalog
 import prompts
@@ -39,6 +41,7 @@ STATIC = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    confirmations.recover_interrupted()
     yield
     await app_calls.close()
     await browser.close()
@@ -126,7 +129,9 @@ async def book(category: str):
     if category not in rules.CATEGORIES:
         raise HTTPException(400, f"Unknown category {category}")
     try:
-        return workflow.book(category)
+        result = workflow.book(category)
+        enquiries.spawn(enquiries.confirmation_call(result['confirmation_id']))
+        return result
     except (LookupError, ValueError) as e:
         raise HTTPException(400, str(e))
 
@@ -153,6 +158,10 @@ class CallRequest(BaseModel):
     mode: str = "vendor_call"
     vendor_id: str | None = "C01"
     checkin_id: int | None = None
+    confirmation_id: int | None = None
+    event_id: int | None = None
+    reconfirm: bool = False
+    renegotiate: bool = False
     say_test: bool = False
 
 
@@ -166,7 +175,9 @@ def public_host() -> str:
 
 def start_call(req: CallRequest) -> str:
     """Ask Twilio to dial; the answered call streams to our /ws. Returns the call SID."""
-    session = {"mode": req.mode, "vendor_id": req.vendor_id or "", "checkin_id": req.checkin_id or ""}
+    session = {"mode": req.mode, "vendor_id": req.vendor_id or "", "checkin_id": req.checkin_id or '',
+               'confirmation_id': req.confirmation_id or '', 'event_id': req.event_id or '',
+               'reconfirm': int(req.reconfirm), 'renegotiate': int(req.renegotiate)}
     SessionConfig.from_dict(session, channel="phone")
     host = public_host()
     # Twilio fetches the call instructions from /twiml when the call is answered.
@@ -205,7 +216,8 @@ async def create_call(req: CallRequest, authorization: str = Header(default=""))
 
 
 @app.api_route("/twiml", methods=["GET", "POST"])
-async def twiml(mode: str = "vendor_call", vendor_id: str = "", checkin_id: str = "", say_test: int = 0):
+async def twiml(mode: str = "vendor_call", vendor_id: str = "", checkin_id: str = "", say_test: int = 0,
+                confirmation_id: str = '', event_id: str = '', reconfirm: str = '', renegotiate: str = ''):
     """Call instructions Twilio fetches on answer: stream the call audio to /ws.
 
     With say_test=1, Twilio first speaks a line and pauses, to check that our
@@ -225,6 +237,8 @@ async def twiml(mode: str = "vendor_call", vendor_id: str = "", checkin_id: str 
     stream.parameter(name="mode", value=mode)
     stream.parameter(name="vendor_id", value=vendor_id)
     stream.parameter(name="checkin_id", value=checkin_id)
+    for name, value in {'confirmation_id': confirmation_id, 'event_id': event_id, 'reconfirm': reconfirm, 'renegotiate': renegotiate}.items():
+        stream.parameter(name=name, value=value)
     response.append(connect)
     return Response(content=str(response), media_type="application/xml")
 

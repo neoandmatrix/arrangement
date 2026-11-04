@@ -11,6 +11,7 @@ import store
 import workflow
 from conversation import SessionConfig, _plan, checked_quote, quote_problems
 from price_fixture import checked_quote as fixture_quote
+from confirmation_fixture import book_confirmed
 
 BRIEF = prompts.SAMPLE_BRIEF
 BASE = {"available": True, "price_amount": 450, "price_unit": "per_plate", "transport_charge": 1500,
@@ -230,7 +231,7 @@ class PriceWorkflowTest(unittest.TestCase):
         current = {**self.quote, "includes_notes": "The agreed cake and delivery"}
         store.save_quote(self.event_id, "K01", None, current)
         result = workflow.record_quote(self.event_id, "K01", "synthetic-recheck", {**current, "includes_notes": "Model paraphrase"})
-        self.assertNotIn("update_id", result)
+        self.assertIn("update_id", result)  # changed coverage must now be reviewed too
         self.assertEqual(store.latest_quotes(self.event_id)["K01"]["includes_notes"], current["includes_notes"])
 
     def test_changed_baseline_invalidates_old_correction(self):
@@ -250,7 +251,7 @@ class PriceWorkflowTest(unittest.TestCase):
 
     def test_unsafe_standby_quote_is_not_activated(self):
         store.save_quote(self.event_id, "K03", None, self.quote)
-        workflow.book("cake", "K01")
+        book_confirmed("cake", "K01")
         store.save_quote(self.event_id, "K03", None, {**self.quote, "unverified": ["advance_amount"]})
         checkin = store.checkins(self.event_id)[0]
         workflow.record_checkin(checkin["id"], "cancelled", None, "Cannot deliver")

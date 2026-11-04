@@ -15,6 +15,7 @@ import discovery
 import rules
 import store
 import workflow
+import confirmations
 
 _tasks: set[asyncio.Task] = set()
 
@@ -124,6 +125,53 @@ async def reconfirm(event_id: int, brief: dict[str, Any], vendor_id: str) -> str
     finally:
         quote = store.latest_quotes(event_id).get(vendor_id)
         bookings = [b for b in store.bookings(event_id) if b["vendor_id"] == vendor_id]
-        status = "approved" if any(b["role"] == "primary" and b["status"] == "active" for b in bookings) else (
+        primary = next((b for b in bookings if b['role'] == 'primary'), None)
+        status = primary['status'] if primary and primary['status'] in ('awaiting_confirmation', 'confirming', 'confirmation_failed', 'awaiting_changes') else "confirmed" if any(b["role"] == "primary" and b["status"] == "active" for b in bookings) else (
             "standby" if any(b["status"] == "standby" for b in bookings) else "declined" if quote and quote.get("available") is False else "quoted" if quote else old_status)
         store.set_enquiry(event_id, vendor_id, vendor["category"], status)
+        if primary and primary['status'] in ('awaiting_confirmation', 'confirmation_failed', 'awaiting_changes'):
+            if not any(u['vendor_id'] == vendor_id and u['status'] == 'pending' for u in store.updates(event_id)):
+                try:
+                    confirmation_id = confirmations.request(event_id, vendor['category'])
+                    spawn(confirmation_call(confirmation_id))
+                except ValueError:
+                    pass  # unresolved prices stay blocked; never auto-confirm them
+
+
+async def confirmation_call(confirmation_id: int) -> str:
+    """One confirmation attempt; its persisted ID prevents duplicate calls or stale successes."""
+    initial = store.confirmation(confirmation_id)
+    await stop_superseded_confirmation_calls(initial['event_id'], initial['category'])
+    try:
+        record = confirmations.claim(confirmation_id)
+    except (ValueError, LookupError):
+        return 'superseded'
+    if record is None:
+        return 'already_started'
+    event_id, brief = store.event(record['event_id'])
+    vendor = store.vendor(record['vendor_id'])
+    try:
+        outcome = await channels.call(vendor, {'mode': 'confirmation', 'confirmation_id': confirmation_id,
+            'event_id': event_id, 'vendor_id': vendor['id']}, caller_info(brief, vendor, 'booking_confirmation'))
+        latest = store.confirmation(confirmation_id)
+        if latest['status'] == 'calling':
+            status = 'no_answer' if outcome['result'] in ('no_answer', 'unreachable') else 'declined' if outcome['result'] == 'declined' else 'failed'
+            # Declining a ring is not a spoken refusal of the booking.
+            if outcome['result'] == 'declined':
+                status = 'no_answer'
+            confirmations.finish(confirmation_id, status, 'No answer' if status == 'no_answer' else 'Call ended without booking confirmation', call_id=outcome.get('call_id'))
+        return store.confirmation(confirmation_id)['status']
+    except Exception:
+        confirmations.finish(confirmation_id, 'failed', 'Confirmation call failed')
+        logger.error('Booking confirmation {} failed', confirmation_id)
+        return 'failed'
+
+
+async def stop_superseded_confirmation_calls(event_id: int, category: str) -> None:
+    """Only close superseded confirmation calls, never unrelated enquiries or direct calls."""
+    import app_calls
+    stale_ids = {c['id'] for c in store.confirmations(event_id) if c['category'] == category and c['status'] == 'superseded'}
+    for pending in list(channels._calls.values()):
+        if pending.session.get('mode') == 'confirmation' and pending.session.get('confirmation_id') in stale_ids:
+            pending.declined.set()
+            await app_calls.finish(pending.call_id, 'Booking confirmation was superseded')

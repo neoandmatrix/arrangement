@@ -165,7 +165,10 @@ async def _call_phone(vendor: dict[str, Any], session: dict[str, Any]) -> dict[s
     try:
         sid = await asyncio.to_thread(
             start_call,
-            CallRequest(to=vendor["phone"], mode=session["mode"], vendor_id=vendor["id"], checkin_id=session.get("checkin_id")),
+            CallRequest(to=vendor["phone"], mode=session["mode"], vendor_id=vendor["id"], checkin_id=session.get("checkin_id"),
+                confirmation_id=session.get('confirmation_id'), event_id=session.get('event_id'),
+                reconfirm=str(session.get('reconfirm', '')).lower() in ('1', 'true'),
+                renegotiate=str(session.get('renegotiate', '')).lower() in ('1', 'true')),
         )
     except Exception as e:
         logger.warning(f"Phone call to {vendor['id']} failed: {e}")
