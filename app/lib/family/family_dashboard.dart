@@ -80,7 +80,7 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
           child: Row(children: [
             const Icon(Icons.pending_actions, size: 20),
             const SizedBox(width: 8),
-            Expanded(child: Text('${_pending.length} price revision${_pending.length == 1 ? '' : 's'} to review', style: const TextStyle(fontSize: 13))),
+            Expanded(child: Text('${_pending.length} ${_pending.any((u) => u['kind'] == 'quote') ? 'quote' : 'price'} revision${_pending.length == 1 ? '' : 's'} to review', style: const TextStyle(fontSize: 13))),
             TextButton(onPressed: _bookings, child: const Text('Review')),
           ]),
         ),
@@ -89,13 +89,19 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
         _page('bookings', [
           if (_pending.isNotEmpty) ...[
             _heading('Needs your approval', 'Existing prices stay unchanged until you decide.'),
-            for (final update in _pending) VendorUpdateCard(key: ValueKey(update['id']), update: update, services: _services, onRefresh: widget.onRefresh),
+            for (final update in _pending) VendorUpdateCard(key: ValueKey(update['id']), update: update, services: _services, onRefresh: widget.onRefresh,
+              onReconfirm: (id) => widget.onAct(id, 'reconfirm', 'Bandobast will recheck the corrected quote before you can approve')),
             const SizedBox(height: 16),
           ],
           _heading('Your bookings', 'One card per service, with its vendor and backup.'),
           for (final service in _services) BookingCard(
             key: ValueKey(service['category']), service: service, checkins: checkins,
             onQuotes: () => _quotes(service['category'] as String), onCheckin: widget.onCheckin,
+            rechecking: widget.busy.contains(booking(service, 'primary')?['vendor_id']),
+            onReconfirm: () {
+              final id = booking(service, 'primary')?['vendor_id'] as String?;
+              if (id != null) widget.onAct(id, 'reconfirm', 'Bandobast will recheck the booked vendor’s charges; agreed terms will not change without your approval');
+            },
           ),
         ]),
         _page('quotes', [

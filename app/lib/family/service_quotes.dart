@@ -79,6 +79,10 @@ class ServiceQuotes extends StatelessWidget {
           QuoteAmount(vendor: vendor),
           if (!canDecide) Padding(padding: const EdgeInsets.only(top: 6), child: Text(status.$1)),
           QuoteWarning(vendor: vendor),
+          if (vendor['needs_price_reconfirmation'] == true) OutlinedButton.icon(
+            onPressed: busy.contains(id) ? null : () => onAct(id, 'reconfirm', 'Bandobast will call ${vendor['name']} to recheck each charge'),
+            icon: const Icon(Icons.fact_check_outlined), label: const Text('Reconfirm prices'),
+          ),
           if (pending) TextButton(onPressed: onBookings, child: const Text('Review the pending price revision first')),
           if (canDecide) Padding(
             padding: const EdgeInsets.only(top: 12),

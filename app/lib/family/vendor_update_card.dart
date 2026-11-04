@@ -4,10 +4,11 @@ import '../api.dart';
 import '../format.dart';
 
 class VendorUpdateCard extends StatefulWidget {
-  const VendorUpdateCard({super.key, required this.update, required this.services, required this.onRefresh});
+  const VendorUpdateCard({super.key, required this.update, required this.services, required this.onRefresh, this.onReconfirm});
   final Map<String, dynamic> update;
   final List<Map<String, dynamic>> services;
   final Future<void> Function() onRefresh;
+  final Future<void> Function(String)? onReconfirm;
 
   @override
   State<VendorUpdateCard> createState() => _VendorUpdateCardState();
@@ -33,7 +34,10 @@ class _VendorUpdateCardState extends State<VendorUpdateCard> {
     final u = widget.update;
     final data = u['data'] as Map<String, dynamic>;
     final quote = data['quote'] as Map<String, dynamic>?;
-    final pending = u['kind'] == 'price' && u['status'] == 'pending';
+    final pending = (u['kind'] == 'price' || u['kind'] == 'quote') && u['status'] == 'pending';
+    final flags = ((data['flags'] as List?) ?? []).cast<Map<String, dynamic>>();
+    final blocked = flags.any((f) => f['level'] == 'block');
+    final correction = u['kind'] == 'quote';
     String name = '${u['vendor_id']}';
     for (final s in widget.services) {
       for (final v in (s['vendors'] as List)) {
@@ -45,21 +49,46 @@ class _VendorUpdateCardState extends State<VendorUpdateCard> {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Update from $name', style: Theme.of(context).textTheme.titleMedium),
+          Text('${correction ? 'Corrected quote from' : 'Update from'} $name', style: Theme.of(context).textTheme.titleMedium),
           Text('${data['notes']}'),
           if (quote != null) ...[
             const SizedBox(height: 6),
-            Text('${rupees(data['previous_price'] as num?)} → ${rupees(quote['price_amount'] as num?)}'
+            if (!correction) Text('${quotedMoney(data['previous_price'])} → ${quotedMoney(quote['price_amount'])}'
                 '${quote['price_unit'] == 'per_plate' ? ' per plate' : ' base price'}'),
+            if (correction) ...[
+              if (data['landed_cost'] != null) Text('Corrected total: ${rupees(data['landed_cost'] as num)}'),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Review all corrected charges'),
+                children: [
+                  for (final entry in {'price_amount': 'Base price', 'price_unit': 'Pricing unit', 'transport_charge': 'Transport',
+                    'extra_charges_amount': 'Extras', 'advance_amount': 'Advance', 'gst_included': 'GST included'}.entries)
+                    Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      SizedBox(width: 100, child: Text(entry.value)),
+                      Expanded(child: Text('${_value((data['previous_quote'] as Map?)?[entry.key])} → ${_value(quote[entry.key])}')),
+                    ])),
+                  if (quote['includes_notes'] != null) Align(alignment: Alignment.centerLeft, child: Text('Covers: ${quote['includes_notes']}')),
+                ],
+              ),
+            ],
             Text(pending ? 'Existing terms stay unchanged until you approve.' : 'Revision ${u['status']}.', style: Theme.of(context).textTheme.bodySmall),
           ],
           if (data['eta'] != null) Text('New arrival time: ${data['eta']}'),
+          for (final flag in flags.where((f) => f['level'] == 'block')) Padding(
+            padding: const EdgeInsets.only(top: 4), child: Text('• ${flag['text']}', style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.error)),
+          ),
+          if (pending && blocked && widget.onReconfirm != null) OutlinedButton.icon(
+            onPressed: _busy ? null : () => widget.onReconfirm!('${u['vendor_id']}'),
+            icon: const Icon(Icons.fact_check_outlined), label: const Text('Reconfirm prices'),
+          ),
           if (pending) Wrap(spacing: 8, children: [
-            FilledButton(onPressed: _busy ? null : () => _decide('approve'), child: const Text('Approve revised price')),
+            FilledButton(onPressed: _busy || blocked ? null : () => _decide('approve'), child: Text(correction ? 'Approve corrected quote' : 'Approve revised price')),
             TextButton(onPressed: _busy ? null : () => _decide('reject'), child: const Text('Reject revision')),
           ]),
         ]),
       ),
     );
   }
+
+  String _value(Object? value) => value is num ? rupees(value) : value == true ? 'Yes' : value == false ? 'No' : '${value ?? '—'}';
 }

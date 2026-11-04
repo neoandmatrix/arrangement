@@ -63,6 +63,7 @@ QUOTE_REQUIRED: dict[str, dict[str, str]] = {
     "caterer": {
         "price_amount": "price per plate",
         "transport_charge": "transport charge",
+        "extra_charges_amount": "staff and other extra charges (0 if none)",
         "gst_included": "whether GST is included",
         "advance_amount": "advance",
     },
@@ -70,23 +71,27 @@ QUOTE_REQUIRED: dict[str, dict[str, str]] = {
         "price_amount": "package price",
         "includes_notes": "what the package includes",
         "transport_charge": "transport charge",
+        "extra_charges_amount": "other extra charges (0 if none)",
         "advance_amount": "advance",
     },
     "cake": {
         "price_amount": "cake price",
         "transport_charge": "delivery charge",
+        "extra_charges_amount": "other extra charges (0 if none)",
         "advance_amount": "advance",
     },
     "photographer": {
         "price_amount": "price",
         "includes_notes": "hours covered, photos or video, and when they're delivered",
         "transport_charge": "travel charge",
+        "extra_charges_amount": "other extra charges (0 if none)",
         "advance_amount": "advance",
     },
     "tent_sound": {
         "price_amount": "price",
         "includes_notes": "tent size, chairs and sound, and whether setup and removal are included",
         "transport_charge": "transport charge",
+        "extra_charges_amount": "other extra charges (0 if none)",
         "advance_amount": "advance",
     },
 }

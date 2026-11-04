@@ -5,8 +5,10 @@ goes through here, so the rules in rules.py are applied the same way from every 
 """
 
 from typing import Any
+import uuid
 
 import rules
+import price_safety
 import store
 
 
@@ -49,7 +51,7 @@ def book(category: str, vendor_id: str | None = None) -> dict[str, Any]:
     """Family approved: book their choice (or the top pick), keep the next best on standby, schedule check-ins."""
     event_id, brief = require_event()
     ranked = comparison(event_id, brief)[category]["ranked"]
-    pending_rates = {u["vendor_id"] for u in store.updates(event_id) if u["kind"] == "price" and u["status"] == "pending"}
+    pending_rates = {u["vendor_id"] for u in store.updates(event_id) if u["kind"] in ("price", "quote") and u["status"] == "pending"}
     if vendor_id in pending_rates:
         raise ValueError("Review this vendor's pending price revision before booking")
     bookable = [r["vendor_id"] for r in ranked if r["bookable"] and r["vendor_id"] not in pending_rates]
@@ -122,6 +124,12 @@ def _act_on_risk(
         )
         return
 
+    backup_quote = store.latest_quotes(event_id).get(backup["vendor_id"])
+    pending = any(u["vendor_id"] == backup["vendor_id"] and u["status"] == "pending" for u in store.updates(event_id))
+    if not backup_quote or pending or any(f["level"] == "block" for f in rules.quote_flags(backup_quote, store.vendor(backup["vendor_id"]), brief)):
+        store.add_alert(event_id, "critical", f"{vendor['name']} ({category}): {risk['reason']}. Backup prices need rechecking; no unsafe backup was activated.")
+        return
+
     store.set_booking(event_id, category, "primary", backup["vendor_id"], "active")
     store.set_booking(event_id, category, "backup", vendor_id, "replaced")
     store.set_enquiry(event_id, vendor_id, category, "replaced")
@@ -146,23 +154,30 @@ def mark_unreachable(checkin_id: int) -> dict[str, str] | None:
     return record_checkin(checkin_id, "unreachable", None, "No answer")
 
 
-def record_vendor_update(event_id: int, vendor_id: str, data: dict[str, Any], vendor_said: str) -> int:
+def record_vendor_update(event_id: int, vendor_id: str, data: dict[str, Any], vendor_said: str | list[dict[str, str]], *, call_id: str | None = None) -> int:
     """Price changes wait for family approval; operational risks use the same backup rules."""
     _, brief = store.event(event_id)
     vendor = store.vendor(vendor_id)
     quote = store.latest_quotes(event_id).get(vendor_id)
-    if problems := rules.update_problems(data, quote, vendor_said):
+    dialogue = [{"role": "user", "text": vendor_said}] if isinstance(vendor_said, str) else vendor_said
+    said = " ".join(m["text"] for m in dialogue if m["role"] in ("user", "vendor_or_family"))
+    if problems := rules.update_problems(data, quote, said):
         raise ValueError("; ".join(problems))
     kind = data["kind"]
     payload = {"notes": data["notes"].strip()}
     if kind == "price":
         # Only the base price changes; extras and advance must not be guessed by the model.
         payload["quote"] = {**quote, "price_amount": data["price_amount"],
-                            "unverified": [f for f in quote.get("unverified", []) if f != "price_amount"]}
+                            "unverified": [f for f in quote.get("unverified", []) if f != "price_amount"],
+                            "price_change_from": quote["price_amount"]}
+        payload["quote"]["amount_checks"] = price_safety.audit(payload["quote"], dialogue, vendor["category"],
+            call_id=call_id or f"update-{uuid.uuid4().hex}", previous=quote)
+        price_issues = [p for p in price_safety.issues(payload["quote"], brief, vendor["category"]) if p["field"] == "price_amount"]
+        if price_issues:
+            raise ValueError("; ".join(p["reason"] for p in price_issues))
+        payload["flags"] = rules.quote_flags(payload["quote"], vendor, brief)
         payload["previous_price"] = quote["price_amount"]
-        for old in store.updates(event_id):
-            if old["vendor_id"] == vendor_id and old["kind"] == "price" and old["status"] == "pending":
-                store.resolve_update(old["id"], "superseded")
+        _supersede_prices(event_id, vendor_id)
     elif kind == "delayed":
         payload["eta"] = data["eta"]
     update_id = store.save_update(event_id, vendor_id, kind, payload, "pending" if kind == "price" else "received")
@@ -194,7 +209,7 @@ def record_vendor_update(event_id: int, vendor_id: str, data: dict[str, Any], ve
 
 def decide_update(event_id: int, update_id: int, approve: bool) -> None:
     update = store.update(update_id)
-    if update["event_id"] != event_id or update["kind"] != "price" or update["status"] != "pending":
+    if update["event_id"] != event_id or update["kind"] not in ("price", "quote") or update["status"] != "pending":
         raise ValueError("This price revision is no longer pending for this function")
     vendor_id = update["vendor_id"]
     vendor = store.vendor(vendor_id)
@@ -202,8 +217,61 @@ def decide_update(event_id: int, update_id: int, approve: bool) -> None:
         current = store.latest_quotes(event_id).get(vendor_id)
         if not current or not current.get("available"):
             raise ValueError("This vendor is no longer available")
-        # Retain current operational terms, changing only the explicitly approved base price.
-        store.save_quote(event_id, vendor_id, None, {**current, "price_amount": update["data"]["quote"]["price_amount"],
-                         "unverified": [f for f in current.get("unverified", []) if f != "price_amount"]})
+        proposed = update["data"]["quote"]
+        if update["kind"] == "quote":
+            if _price_terms(current) != _price_terms(update["data"]["previous_quote"]):
+                raise ValueError("The quote changed since this correction; recheck it again")
+            candidate = proposed
+        else:
+            if current["price_amount"] != update["data"]["previous_price"]:
+                raise ValueError("The price changed since this revision; recheck it again")
+            # Price approval must not launder stale/unverified transport, extras or advance.
+            fields = {**current.get("amount_checks", {}).get("fields", {}),
+                      "price_amount": proposed.get("amount_checks", {}).get("fields", {}).get("price_amount", {})}
+            candidate = {**current, "price_amount": proposed["price_amount"], "price_change_from": update["data"]["previous_price"],
+                         "unverified": [f for f in current.get("unverified", []) if f != "price_amount"],
+                         "amount_checks": {"version": price_safety.VERSION, "category": vendor["category"], "fields": fields,
+                                           "gst_statement": current.get("amount_checks", {}).get("gst_statement")}}
+        _, brief = store.event(event_id)
+        if any(flag["level"] == "block" for flag in rules.quote_flags(candidate, vendor, brief)):
+            raise ValueError("Price safeguards are not satisfied. Reconfirm all flagged charges before approval.")
+        store.save_quote(event_id, vendor_id, None, candidate)
     store.resolve_update(update_id, "approved" if approve else "rejected")
     store.add_alert(event_id, "info", f"{'Approved' if approve else 'Rejected'} revised price from {vendor['name']}.")
+
+
+def _supersede_prices(event_id: int, vendor_id: str) -> None:
+    for old in store.updates(event_id):
+        if old["vendor_id"] == vendor_id and old["kind"] in ("price", "quote") and old["status"] == "pending":
+            store.resolve_update(old["id"], "superseded")
+
+
+def _price_terms(quote: dict[str, Any]) -> dict[str, Any]:
+    return {field: quote.get(field) for field in (*price_safety.FIELDS, "price_unit", "gst_included")}
+
+
+def record_quote(event_id: int, vendor_id: str, call_id: str, quote: dict[str, Any]) -> dict[str, Any]:
+    """Rechecking an already booked quote never silently replaces agreed charges."""
+    _, brief = store.event(event_id)
+    vendor = store.vendor(vendor_id)
+    committed = any(b["vendor_id"] == vendor_id and b["status"] in ("active", "standby") for b in store.bookings(event_id))
+    current = store.latest_quotes(event_id).get(vendor_id)
+    if committed and quote.get("available") is False:
+        update_id = record_vendor_update(event_id, vendor_id, {"kind": "cancelled", "notes": quote.get("notes") or "Vendor is no longer available."}, [], call_id=call_id)
+        return {"update_id": update_id}
+    if committed and current and _price_terms(current) != _price_terms(quote):
+        _supersede_prices(event_id, vendor_id)
+        update_id = store.save_update(event_id, vendor_id, "quote", {
+            "quote": quote, "previous_quote": current, "previous_price": current.get("price_amount"),
+            "notes": "Vendor corrected the quote. Review all charges before accepting.",
+            "flags": rules.quote_flags(quote, vendor, brief),
+        }, "pending")
+        store.add_alert(event_id, "warn", f"{vendor['name']}: corrected charges need your approval; existing terms are unchanged.")
+        return {"update_id": update_id}
+    if committed and current:
+        # Only verification metadata changes. Keep the booked vendor's operational terms intact.
+        quote = {**current, **{k: quote[k] for k in ("amount_checks", "unverified", "initial_price_amount", "initial_price_unit", "initial_price_verified", "opening_quote") if k in quote}}
+        if not any(f["level"] == "block" for f in rules.quote_flags(quote, vendor, brief)):
+            _supersede_prices(event_id, vendor_id)
+    store.save_quote(event_id, vendor_id, call_id, quote)
+    return {"saved": True}

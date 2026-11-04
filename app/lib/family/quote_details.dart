@@ -35,10 +35,10 @@ class QuoteDetails extends StatelessWidget {
       title: const Text('Price breakdown & details'),
       children: [
         if (quote != null) ...[
-          _line('Base price${quote['price_unit'] == 'per_plate' ? ' per plate' : ''}', rupees(quote['price_amount'] as num?)),
-          if (quote['transport_charge'] != null) _line('Transport', rupees(quote['transport_charge'] as num)),
-          if (quote['extra_charges_amount'] != null) _line('Extras', rupees(quote['extra_charges_amount'] as num)),
-          if (quote['advance_amount'] != null) _line('Advance', rupees(quote['advance_amount'] as num)),
+          _line('Base price${quote['price_unit'] == 'per_plate' ? ' per plate' : ''}', quotedMoney(quote['price_amount'])),
+          if (quote['transport_charge'] != null) _line('Transport', quotedMoney(quote['transport_charge'])),
+          if (quote['extra_charges_amount'] != null) _line('Extras', quotedMoney(quote['extra_charges_amount'])),
+          if (quote['advance_amount'] != null) _line('Advance', quotedMoney(quote['advance_amount'])),
           if (quote['gst_included'] != null) _line('GST', quote['gst_included'] == true ? 'Included' : 'Additional'),
           if ('${quote['includes_notes'] ?? ''}'.isNotEmpty) _line('Covers', '${quote['includes_notes']}'),
         ],

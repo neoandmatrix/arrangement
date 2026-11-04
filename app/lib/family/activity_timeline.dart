@@ -14,14 +14,15 @@ List<Map<String, dynamic>> timelineEntries({required List<Map<String, dynamic>> 
     final data = update['data'] as Map<String, dynamic>;
     final name = vendorName(services, '${update['vendor_id']}');
     final kind = update['kind'];
-    reportedMessages.add('$name: ${data['notes']}${kind == 'price' ? ' — revised price needs your approval.' : ''}');
+    reportedMessages.add(kind == 'quote' ? '$name: corrected charges need your approval; existing terms are unchanged.'
+        : '$name: ${data['notes']}${kind == 'price' ? ' — revised price needs your approval.' : ''}');
     final quote = data['quote'] as Map?;
     entries.add({
       'key': 'update-${update['id']}', 'time': update['created_at'], 'reported': true,
-      'title': switch (kind) { 'price' => 'Price revision', 'cancelled' => 'Vendor cancelled', 'delayed' => 'Arrival delayed', _ => 'Vendor update' },
-      'detail': '$name\n${quote != null ? '${rupees(data['previous_price'] as num?)} → ${rupees(quote['price_amount'] as num?)}${quote['price_unit'] == 'per_plate' ? ' per plate' : ' base price'}' : data['notes']}'
+      'title': switch (kind) { 'price' => 'Price revision', 'quote' => 'Quote correction', 'cancelled' => 'Vendor cancelled', 'delayed' => 'Arrival delayed', _ => 'Vendor update' },
+      'detail': '$name\n${kind == 'quote' ? 'Corrected total: ${rupees(data['landed_cost'] as num?)}' : quote != null ? '${quotedMoney(data['previous_price'])} → ${quotedMoney(quote['price_amount'])}${quote['price_unit'] == 'per_plate' ? ' per plate' : ' base price'}' : data['notes']}'
           '${data['eta'] != null ? '\nArrival: ${data['eta']}' : ''}',
-      'status': kind == 'price' ? '${update['status']}' : null,
+      'status': kind == 'price' || kind == 'quote' ? '${update['status']}' : null,
       'level': update['status'] == 'pending' || kind == 'cancelled' || kind == 'delayed' ? 'warn' : 'info',
       'icon': kind == 'price' ? Icons.receipt_long_outlined : Icons.message_outlined,
     });

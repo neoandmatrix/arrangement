@@ -58,11 +58,11 @@ class DropUnspeakableTest(unittest.TestCase):
 
 class QuoteProblemsTest(unittest.TestCase):
     def test_caterer_quote_needs_transport_gst_and_advance(self):
-        args = {"available": True, "price_amount": 480, "price_unit": "per_plate", "transport_charge": 0}
+        args = {"available": True, "price_amount": 480, "price_unit": "per_plate", "transport_charge": 0, "extra_charges_amount": 0}
         self.assertEqual(quote_problems(args, "caterer"), ["whether GST is included", "advance"])
 
     def test_zero_counts_as_an_answer(self):
-        args = {"available": True, "price_amount": 12000, "extra_charges_amount": 0, "transport_charge": 0, "advance_amount": 0}
+        args = {"available": True, "price_amount": 12000, "price_unit": "total", "extra_charges_amount": 0, "transport_charge": 0, "advance_amount": 0}
         self.assertEqual(quote_problems(args, "priest"), [])
 
     def test_unavailable_vendor_needs_nothing_else(self):

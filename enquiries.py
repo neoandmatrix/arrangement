@@ -110,3 +110,20 @@ async def checkin_call(event_id: int, brief: dict[str, Any], checkin_id: int) ->
     if outcome["result"] != "answered":
         workflow.mark_unreachable(checkin_id)
     return outcome["result"]
+
+
+async def reconfirm(event_id: int, brief: dict[str, Any], vendor_id: str) -> str:
+    """A price recheck preserves approved/standby status and does not silently change bookings."""
+    vendor = store.vendor(vendor_id)
+    old_status = (store.enquiry(event_id, vendor_id) or {}).get("status", "quoted")
+    store.set_enquiry(event_id, vendor_id, vendor["category"], "reconfirming")
+    try:
+        outcome = await channels.call(vendor, {"mode": "vendor_call", "vendor_id": vendor_id,
+            "event_id": event_id, "reconfirm": "1"}, caller_info(brief, vendor, "reconfirmation"))
+        return outcome["result"]
+    finally:
+        quote = store.latest_quotes(event_id).get(vendor_id)
+        bookings = [b for b in store.bookings(event_id) if b["vendor_id"] == vendor_id]
+        status = "approved" if any(b["role"] == "primary" and b["status"] == "active" for b in bookings) else (
+            "standby" if any(b["status"] == "standby" for b in bookings) else "declined" if quote and quote.get("available") is False else "quoted" if quote else old_status)
+        store.set_enquiry(event_id, vendor_id, vendor["category"], status)

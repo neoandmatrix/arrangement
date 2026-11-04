@@ -7,7 +7,7 @@ import unittest
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,6 +19,7 @@ import channels
 import prompts
 import store
 import workflow
+from price_fixture import checked_quote
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, InterruptionFrame
 
 
@@ -35,8 +36,8 @@ class AppAudioTest(unittest.TestCase):
         store.save_participant(self.other_family, None)
         self.event_id = store.save_event({**prompts.SAMPLE_NAAMKARAN, "family_id": self.family})
         for vendor_id, price in (("K01", 2400), ("K03", 2600)):
-            store.save_quote(self.event_id, vendor_id, None, {"available": True, "price_amount": price,
-                "price_unit": "total", "transport_charge": 0, "advance_amount": 500})
+            store.save_quote(self.event_id, vendor_id, None, checked_quote({"available": True, "price_amount": price,
+                "price_unit": "total", "transport_charge": 0, "advance_amount": 500}, "cake"))
         workflow.book("cake", "K01")
         @asynccontextmanager
         async def lifespan(app):
@@ -120,7 +121,7 @@ class AppAudioTest(unittest.TestCase):
     def test_family_event_and_update_decisions_are_scoped(self):
         self.assertIsNone(self.client.get("/app/events/current", headers=self.headers(self.other_family)).json()["event"])
         self.assertEqual(self.client.post("/app/events/current/vendors/K01/approve", headers=self.headers(self.other_family)).status_code, 403)
-        update_id = workflow.record_vendor_update(self.event_id, "K01", {"kind": "price", "price_unit": "total", "price_amount": 2800, "notes": "Rate"}, "2800")
+        update_id = workflow.record_vendor_update(self.event_id, "K01", {"kind": "price", "price_unit": "total", "price_amount": 2800, "notes": "Rate"}, "Base price is 2800 rupees in total")
         self.assertEqual(self.client.post(f"/app/updates/{update_id}/approve", headers=self.headers(self.other_family)).status_code, 403)
         self.assertEqual(self.client.post(f"/app/updates/{update_id}/approve", headers=self.headers()).status_code, 200)
 
@@ -212,6 +213,22 @@ class AppAudioTest(unittest.TestCase):
                 with self.audio(ticket):
                     pass
             self.assertFalse(app_calls.busy(self.family))
+
+    def test_price_reconfirmation_is_scoped_to_the_family(self):
+        with patch("enquiries.reconfirm", new_callable=AsyncMock, return_value="answered") as recheck:
+            response = self.client.post("/app/events/current/vendors/K01/reconfirm", headers=self.headers(self.other_family))
+            self.assertEqual(response.status_code, 403)
+            recheck.assert_not_called()
+            response = self.client.post("/app/events/current/vendors/K01/reconfirm", headers=self.headers())
+            self.assertEqual(response.status_code, 200)
+            recheck.assert_called_once()
+
+    def test_quote_correction_approval_cannot_bypass_server_price_guards(self):
+        current = store.latest_quotes(self.event_id)["K01"]
+        result = workflow.record_quote(self.event_id, "K01", "synthetic-recheck", {**current, "transport_charge": 500000})
+        response = self.client.post(f"/app/updates/{result['update_id']}/approve", headers=self.headers())
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(store.latest_quotes(self.event_id)["K01"]["transport_charge"], 0)
 
 
 class PCMSerializerTest(unittest.IsolatedAsyncioTestCase):

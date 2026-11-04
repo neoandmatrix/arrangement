@@ -4,6 +4,9 @@ final _rupees = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDig
 
 String rupees(num? amount) => amount == null ? '—' : _rupees.format(amount);
 
+/// Old invalid quotes must remain reviewable without coercing a string into an agreed price.
+String quotedMoney(Object? amount) => amount == null ? '—' : amount is num ? rupees(amount) : 'Invalid amount';
+
 String prettyDate(String? iso) {
   if (iso == null || iso.isEmpty) return '';
   final d = DateTime.tryParse(iso);

@@ -23,6 +23,7 @@ import catalog
 import channels
 import enquiries
 import prompts
+import price_safety
 import rules
 import store
 import workflow
@@ -181,6 +182,7 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
                     "landed_cost": (row or {}).get("landed_cost"),
                     "flags": (row or {}).get("flags", []),
                     "bookable": bool(row and row["bookable"]),
+                    "needs_price_reconfirmation": bool(quote and quote.get("available") and price_safety.issues(quote, brief, category)),
                     "savings": rules.savings(quote, brief) if quote else None,
                 }
             )
@@ -202,8 +204,10 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
         "services": services,
         "alerts": store.alerts(event_id),
         "checkins": store.checkins(event_id),
-        "updates": store.updates(event_id),
-        "calling_now": any(e["status"] in ("ringing", "in_call", "renegotiating") for e in status.values()),
+        "updates": [{**u, "data": {**u["data"], "flags": rules.quote_flags(u["data"]["quote"], store.vendor(u["vendor_id"]), brief),
+                                    "landed_cost": rules.landed_cost(u["data"]["quote"], brief)}}
+                    if u["kind"] in ("price", "quote") else u for u in store.updates(event_id)],
+        "calling_now": any(e["status"] in ("ringing", "in_call", "renegotiating", "reconfirming") for e in status.values()),
     }
 
 
@@ -262,6 +266,18 @@ async def call_checkin(checkin_id: int, request: Request):
     except (KeyError, LookupError) as e:
         raise HTTPException(404, str(e))
     enquiries.spawn(enquiries.checkin_call(event_id, brief, checkin_id))
+    return {"ok": True}
+
+
+@api.post("/events/current/vendors/{vendor_id}/reconfirm")
+async def reconfirm_prices(vendor_id: str, request: Request):
+    event_id, brief = _event(request)
+    if vendor_id not in store.latest_quotes(event_id):
+        raise HTTPException(400, "No quote from this vendor yet")
+    status = (store.enquiry(event_id, vendor_id) or {}).get("status")
+    if status in ("ringing", "in_call", "renegotiating", "reconfirming"):
+        raise HTTPException(409, "This vendor already has a call in progress")
+    enquiries.spawn(enquiries.reconfirm(event_id, brief, vendor_id))
     return {"ok": True}
 
 

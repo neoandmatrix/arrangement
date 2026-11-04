@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:bandobast/api.dart';
 import 'package:bandobast/family/new_function_screen.dart';
 import 'package:bandobast/family/vendor_update_card.dart';
+import 'package:bandobast/family/quote_details.dart';
 import 'package:bandobast/settings.dart';
 import 'package:bandobast/setup_screen.dart';
 import 'package:flutter/material.dart';
@@ -85,5 +86,33 @@ void main() {
     await tester.pumpAndSettle();
     expect(decisionPath, '/app/updates/7/approve');
     expect(refreshed, isTrue);
+  });
+
+  testWidgets('unsafe quote corrections disable approval and offer price rechecking', (tester) async {
+    String? rechecked;
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: VendorUpdateCard(
+      update: {'id': 8, 'vendor_id': 'K01', 'kind': 'quote', 'status': 'pending', 'data': {
+        'notes': 'Corrected delivery charge', 'previous_price': 2400,
+        'previous_quote': {'price_amount': 2400, 'transport_charge': 100},
+        'quote': {'price_amount': 2400, 'transport_charge': 500000, 'price_unit': 'total'},
+        'flags': [{'level': 'block', 'text': 'Transport needs a separate vendor repeat'}],
+      }},
+      services: const [], onRefresh: () async {}, onReconfirm: (id) async { rechecked = id; },
+    ))));
+    final approve = tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Approve corrected quote'));
+    expect(approve.onPressed, isNull);
+    await tester.tap(find.text('Reconfirm prices'));
+    await tester.pumpAndSettle();
+    expect(rechecked, 'K01');
+  });
+
+  testWidgets('invalid legacy amount types remain readable without being converted', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: SingleChildScrollView(child: QuoteDetails(
+      vendor: {'vendor_id': 'K01', 'quote': {'price_amount': 'unknown', 'transport_charge': 'not-a-number'}, 'flags': []},
+    )))));
+    await tester.tap(find.text('Price breakdown & details'));
+    await tester.pumpAndSettle();
+    expect(find.text('Invalid amount'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
   });
 }

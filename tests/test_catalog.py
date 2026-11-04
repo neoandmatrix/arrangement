@@ -99,7 +99,7 @@ class BriefProblemsTest(unittest.TestCase):
 
 class NewCategoryRulesTest(unittest.TestCase):
     def test_photographer_must_say_what_is_covered(self):
-        args = {"available": True, "price_amount": 9000, "transport_charge": 0, "advance_amount": 2000, "includes_notes": ""}
+        args = {"available": True, "price_amount": 9000, "price_unit": "total", "transport_charge": 0, "extra_charges_amount": 0, "advance_amount": 2000, "includes_notes": ""}
         self.assertEqual(quote_problems(args, "photographer"), ["hours covered, photos or video, and when they're delivered"])
 
     def test_cake_gets_one_gentle_round_only(self):

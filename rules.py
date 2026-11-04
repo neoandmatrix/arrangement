@@ -13,6 +13,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
+import price_safety
+
 CATEGORIES = ("priest", "caterer", "decorator", "cake", "photographer", "tent_sound")
 
 # How early each vendor must be at the venue (or deliver), relative to the muhurat.
@@ -62,14 +64,14 @@ _NUMBER_RE = re.compile(r"\d[\d,]*")  # \d matches Devanagari, Kannada etc. digi
 
 def numbers_heard(text: str) -> set[int]:
     """Every number in what the vendor said. Prisma's 'transcribe' format writes them as digits."""
-    return {int(m.replace(",", "")) for m in _NUMBER_RE.findall(text) if m.replace(",", "")}
+    return price_safety.numbers_heard(text)
 
 
 def unverified_amounts(quote: dict[str, Any], vendor_said: str) -> list[str]:
-    """Amounts in a recorded quote that the vendor never actually said.
+    """Legacy numeric-presence diagnostic, not a booking guard.
 
-    The LLM extracts the quote, and it can invent or mishear numbers; a price that can't be
-    traced to the vendor's own words must not drive a booking.
+    Charge-specific verification and booking eligibility use price_safety.audit/issues.
+    This helper alone cannot distinguish a transport amount from an advance.
     """
     heard = numbers_heard(vendor_said)
     return [f for f in AMOUNT_FIELDS if quote.get(f) and quote[f] not in heard]
@@ -82,7 +84,8 @@ def event_start(brief: dict[str, Any]) -> datetime:
 def landed_cost(quote: dict[str, Any], brief: dict[str, Any]) -> int | None:
     """Total the family actually pays: base price (per plate x guests, or total) plus all extras."""
     price = quote.get("price_amount")
-    if price is None:
+    amounts = [price, quote.get("transport_charge", 0), quote.get("extra_charges_amount", 0)]
+    if price is None or any(value is not None and (type(value) is not int or value < 0 or value > price_safety.MAX_AMOUNT) for value in amounts):
         return None
     base = price * int(brief.get("guests") or 0) if quote.get("price_unit") == "per_plate" else price
     extras = (quote.get("transport_charge") or 0) + (quote.get("extra_charges_amount") or 0)
@@ -120,7 +123,7 @@ def best_competing_total(competitor_quotes: list[dict[str, Any]], brief: dict[st
     totals = [
         t
         for q in competitor_quotes
-        if q.get("available") and not q.get("unverified") and (t := landed_cost(q, brief))
+        if q.get("available") and not price_safety.issues(q, brief, q.get("amount_checks", {}).get("category", "caterer")) and (t := landed_cost(q, brief))
     ]
     return min(totals) if totals else None
 
@@ -184,6 +187,8 @@ def counter_offer(
 
     base = ask_total - extras
     price = _round_down(base / guests if unit == "per_plate" else base, unit)
+    if price < 0:
+        return {**stop, "why": "The extras leave no valid base counter-offer; clarify the charges instead."}
     if price >= (offer.get("price_amount") or 0):
         return {**stop, "why": "No meaningful discount left to ask for."}
     asked_total = price * guests + extras if unit == "per_plate" else price + extras
@@ -207,11 +212,19 @@ def counter_offer(
 def savings(quote: dict[str, Any], brief: dict[str, Any]) -> int | None:
     """How much negotiation saved on the total, if the price came down."""
     first = quote.get("initial_price_amount")
-    if not first or not quote.get("price_amount") or first <= quote["price_amount"]:
+    if quote.get("initial_price_verified") is not True or type(first) is not int or first > price_safety.MAX_AMOUNT:
         return None
-    before = landed_cost({**quote, "price_amount": first}, brief)
+    category = quote.get("amount_checks", {}).get("category")
+    if category not in CATEGORIES or price_safety.issues(quote, brief, category):
+        return None
+    opening = quote.get("opening_quote")
+    if not isinstance(opening, dict) or price_safety.issues(opening, brief, category):
+        return None
+    # Keep the opening unit and charges: a total must not become a per-plate opening
+    # price, and a waived delivery fee is a real saving even when the base price is unchanged.
+    before = landed_cost(opening, brief)
     after = landed_cost(quote, brief)
-    return (before - after) if before and after else None
+    return before - after if before is not None and after is not None and before > after else None
 
 
 _WARNING_RE = re.compile(r"\b(" + "|".join(re.escape(p) for p in RELIABILITY_WARNINGS) + r")\b")
@@ -239,7 +252,10 @@ def quote_flags(quote: dict[str, Any], vendor: dict[str, Any], brief: dict[str, 
     for field in quote.get("unverified", []):
         label = field.replace("_amount", "").replace("_", " ")
         text = f"{label.capitalize()} ₹{quote.get(field)} was not heard from the vendor; re-confirm"
-        add("block" if field == "price_amount" else "warn", text)
+        add("block", text)
+    for issue in price_safety.issues(quote, brief, vendor["category"]):
+        if issue["field"] not in quote.get("unverified", []):
+            add("block", issue["reason"])
     if quote.get("transport_charge") is None:
         add("warn", "Transport charge not discussed")
     if quote.get("gst_included") is None and vendor["category"] == "caterer":
@@ -247,13 +263,13 @@ def quote_flags(quote: dict[str, Any], vendor: dict[str, Any], brief: dict[str, 
     if quote.get("extra_charges_amount"):
         add("info", f"Extra charges: ₹{quote['extra_charges_amount']} ({quote.get('extra_charges_notes') or 'unspecified'})")
     if saved := savings(quote, brief):
-        add("info", f"Negotiated ₹{quote['initial_price_amount']} → ₹{quote['price_amount']}: saves ₹{saved}")
+        add("info", f"Verified total ₹{landed_cost(quote['opening_quote'], brief)} → ₹{landed_cost(quote, brief)}: saves ₹{saved}")
 
     total = landed_cost(quote, brief)
     advance = quote.get("advance_amount")
     if advance is None:
         add("warn", "Advance amount not discussed")
-    elif total and advance > total * ADVANCE_LIMIT_SHARE:
+    elif type(advance) is int and total and advance > total * ADVANCE_LIMIT_SHARE:
         add("warn", f"Advance ₹{advance} is more than half of the total ₹{total}")
 
     budget = (brief.get("budget") or {}).get(vendor["category"])

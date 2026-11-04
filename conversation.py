@@ -47,6 +47,7 @@ from pipecat_gnani import INDIC_AUTO_LANGUAGE_CODE, GnaniSTTService, GnaniTTSSer
 
 import catalog
 import prompts
+import price_safety
 import rules
 import store
 import workflow
@@ -69,6 +70,7 @@ class SessionConfig:
     vendor_id: str | None = None
     checkin_id: int | None = None
     renegotiate: bool = False  # vendor_call: calling back about their quote, at the family's request
+    reconfirm: bool = False  # verification of quote charges, not confirmation of a booking
     event_id: int | None = None
     language: str = "hi-IN"
     draft: dict[str, Any] = field(default_factory=dict)
@@ -87,6 +89,7 @@ class SessionConfig:
             vendor_id=data.get("vendor_id") or None,
             checkin_id=int(checkin_id) if checkin_id not in (None, "") else None,
             renegotiate=str(data.get("renegotiate", "")).lower() in ("1", "true"),
+            reconfirm=str(data.get("reconfirm", "")).lower() in ("1", "true"),
             event_id=data.get("event_id"),
             language=data.get("language", "hi-IN"),
             draft=dict(data.get("draft") or {}),
@@ -245,7 +248,11 @@ def _plan(cfg: SessionConfig) -> tuple[str, list[FunctionSchema], str, int | Non
     if cfg.mode == "vendor_call":
         vendor = store.vendor(cfg.vendor_id)
         quote = store.latest_quotes(event_id).get(vendor["id"])
-        if cfg.renegotiate:
+        if cfg.reconfirm:
+            if not quote:
+                raise ValueError(f"No quote from {vendor['name']} to recheck")
+            prompt = prompts.reconfirmation_prompt(vendor=vendor, brief=brief, quote=quote)
+        elif cfg.renegotiate:
             if not quote:
                 raise ValueError(f"No quote from {vendor['name']} to renegotiate")
             prompt = prompts.renegotiation_prompt(vendor=vendor, brief=brief, quote=quote)
@@ -298,10 +305,11 @@ async def run_conversation(
     )
     outcome: dict[str, Any] = {}
     draft = dict(cfg.draft)
-    previous_quote = store.latest_quotes(event_id).get(cfg.vendor_id) if cfg.renegotiate else None
-    if previous_quote:
-        # Savings are measured from their original opening price, not from this call's.
-        outcome["first_price"] = previous_quote.get("initial_price_amount") or previous_quote.get("price_amount")
+    previous_quote = store.latest_quotes(event_id).get(cfg.vendor_id) if cfg.renegotiate or cfg.reconfirm else None
+    if previous_quote and previous_quote.get("initial_price_verified") is True and not price_safety.issues(previous_quote, store.event(event_id)[1], store.vendor(cfg.vendor_id)["category"]):
+        opening = previous_quote.get("opening_quote")
+        if isinstance(opening, dict) and not price_safety.issues(opening, store.event(event_id)[1], store.vendor(cfg.vendor_id)["category"]):
+            outcome["opening_quote"] = opening
 
     def user_turns() -> int:
         return sum(_is_spoken_turn(m) and m["role"] == "user" for m in context.get_messages())
@@ -416,9 +424,9 @@ async def run_conversation(
         if not other_side_has_spoken():
             await reject(fn, ["the vendor has not spoken yet; greet them and ask what changed"])
             return
-        vendor_said = " ".join(_text(m) for m in context.get_messages() if _is_spoken_turn(m) and m["role"] == "user")
+        dialogue = _transcript(context)
         try:
-            update_id = workflow.record_vendor_update(event_id, cfg.vendor_id, dict(fn.arguments), vendor_said)
+            update_id = workflow.record_vendor_update(event_id, cfg.vendor_id, dict(fn.arguments), dialogue, call_id=cfg.call_id)
         except ValueError as e:
             await reject(fn, [str(e)])
             return
@@ -430,32 +438,39 @@ async def run_conversation(
     async def record_quote(fn: FunctionCallParams) -> None:
         if await answer_pending(fn):
             return
+        if not other_side_has_spoken():
+            await reject(fn, ["the vendor must speak before any quote is recorded"])
+            return
         category = store.vendor(cfg.vendor_id)["category"]
         if problems := quote_problems(fn.arguments, category):
             await reject(fn, problems)
             return
-        quote = normalize_quote(dict(fn.arguments))
-        vendor_said = " ".join(_text(m) for m in context.get_messages() if _is_spoken_turn(m) and m["role"] == "user")
-        if previous_quote:
-            # On a callback, the amounts they quoted (and we verified) last time count as said.
-            vendor_said += " " + " ".join(str(previous_quote.get(f) or "") for f in rules.AMOUNT_FIELDS)
-        quote["unverified"] = rules.unverified_amounts(quote, vendor_said)
-        if quote["unverified"]:
-            log.warning(f"record_quote: amounts not heard from the vendor: {quote['unverified']}")
-            # Send the model back to ask, twice at most; after that save with the flag for a human.
+        _, brief = store.event(event_id)
+        quote = checked_quote(dict(fn.arguments), _transcript(context), brief, category, cfg.call_id, previous_quote)
+        problems = price_safety.issues(quote, brief, category)
+        if problems:
+            # Bounded recovery, not bounded safety: unresolved quotes remain blocked even after retries.
             outcome["quote_rejections"] = outcome.get("quote_rejections", 0) + 1
             if outcome["quote_rejections"] <= 2:
-                names = ", ".join(f.replace("_amount", "").replace("_", " ") for f in quote["unverified"])
-                await reject(fn, [f"{names}: the vendor never said this amount, ask them directly"])
+                await reject(fn, [p["reason"] + ". Ask only about this charge and have them repeat its amount in rupees, not just yes" for p in problems])
                 return
-        # The first price we were asked to record is their opening price, whatever the model says.
-        quote["initial_price_amount"] = outcome.setdefault("first_price", quote.get("price_amount"))
-        if await negotiate_first(fn, category, quote):
-            return
-        store.save_quote(event_id, cfg.vendor_id, cfg.call_id, quote)
+        if not problems and quote.get("available"):
+            # A hallucinated or suspicious first attempt must never become advertised savings.
+            opening = outcome.setdefault("opening_quote", dict(quote))
+            quote["initial_price_amount"] = opening["price_amount"]
+            quote["initial_price_unit"] = opening["price_unit"]
+            quote["initial_price_verified"] = True
+            quote["opening_quote"] = opening
+            if not cfg.reconfirm and await negotiate_first(fn, category, quote):
+                return
+        result = workflow.record_quote(event_id, cfg.vendor_id, cfg.call_id, quote)
         mark_recorded("record_quote")
         log.info(f"record_quote {cfg.vendor_id}: {quote}")
-        await fn.result_callback({"ok": True})
+        if result.get("update_id") and cfg.on_result:
+            await cfg.on_result({"type": "update_saved", "update_id": result["update_id"]})
+        await fn.result_callback({"ok": True, "bookable": not problems, "next":
+            "The family must review the corrected charges; nothing agreed was changed." if result.get("update_id") else
+            "Some amounts are unverified. Tell them the family cannot book until these prices are rechecked." if problems else "The quote is recorded; the family will decide."})
 
     async def record_checkin(fn: FunctionCallParams) -> None:
         if await answer_pending(fn):
@@ -750,7 +765,16 @@ def quote_problems(args: dict[str, Any], category: str) -> list[str]:
         return ["whether they are available on the date"]
     if not args.get("available"):
         return []
-    return [label for field, label in catalog.QUOTE_REQUIRED[category].items() if args.get(field) in (None, "")]
+    return [label for field, label in catalog.QUOTE_REQUIRED[category].items() if args.get(field) in (None, "")] + price_safety.value_problems(args, category)
+
+
+def checked_quote(args: dict[str, Any], dialogue: list[dict[str, str]], brief: dict[str, Any], category: str,
+                  call_id: str, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The model may supply quote fields, never audit metadata or a verified opening price."""
+    quote = normalize_quote({k: v for k, v in args.items() if k in RECORD_QUOTE.properties})
+    quote["amount_checks"] = price_safety.audit(quote, dialogue, category, call_id=call_id, previous=previous)
+    quote["unverified"] = [field for field in price_safety.FIELDS if not quote["amount_checks"]["fields"][field]["statements"]]
+    return quote
 
 
 _TOOL_CALL_RE = re.compile(r"\b(?:" + "|".join(TOOL_NAMES) + r")\s*\(.*?\)", re.S)

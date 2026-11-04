@@ -10,6 +10,7 @@ import rules
 import store
 import workflow
 from conversation import SessionConfig, _plan, brief_problems
+from price_fixture import checked_quote
 
 
 class VendorUpdatesTest(unittest.TestCase):
@@ -20,10 +21,10 @@ class VendorUpdatesTest(unittest.TestCase):
         self.brief = {**prompts.SAMPLE_NAAMKARAN, "family_id": "F12345678",
                       "date": (date.today() + timedelta(days=20)).isoformat()}
         self.event_id = store.save_event(self.brief)
-        self.quote = {"available": True, "price_amount": 2400, "price_unit": "total", "transport_charge": 100,
-                      "extra_charges_amount": 0, "advance_amount": 500, "initial_price_amount": 2500}
+        self.quote = checked_quote({"available": True, "price_amount": 2400, "price_unit": "total", "transport_charge": 100,
+                      "extra_charges_amount": 0, "advance_amount": 500, "initial_price_amount": 2500}, "cake")
         for vendor_id, price in (("K01", 2400), ("K03", 2600)):
-            store.save_quote(self.event_id, vendor_id, None, {**self.quote, "price_amount": price})
+            store.save_quote(self.event_id, vendor_id, None, checked_quote({**self.quote, "price_amount": price}, "cake"))
         workflow.book("cake", "K01")
 
     def tearDown(self):
@@ -66,11 +67,13 @@ class VendorUpdatesTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             workflow.decide_update(self.event_id, second, True)
 
-    def test_other_unverified_charges_remain_flagged(self):
+    def test_other_unverified_charges_block_price_revision_approval(self):
         store.save_quote(self.event_id, "K01", None, {**self.quote, "unverified": ["price_amount", "transport_charge"]})
         update_id = self.price_update()
-        workflow.decide_update(self.event_id, update_id, True)
-        self.assertEqual(store.latest_quotes(self.event_id)["K01"]["unverified"], ["transport_charge"])
+        with self.assertRaises(ValueError):
+            workflow.decide_update(self.event_id, update_id, True)
+        self.assertEqual(store.latest_quotes(self.event_id)["K01"]["price_amount"], 2400)
+        self.assertIn("transport_charge", store.latest_quotes(self.event_id)["K01"]["unverified"])
 
     def test_cancellation_switches_backup_and_disables_cancelled_quote(self):
         workflow.record_vendor_update(self.event_id, "K01", {"kind": "cancelled", "notes": "Cannot deliver"}, "Cannot deliver")
@@ -133,7 +136,7 @@ class VendorUpdatesTest(unittest.TestCase):
     def test_pending_revision_cannot_be_booked_at_the_old_rate(self):
         event_id = store.save_event(self.brief)
         store.save_quote(event_id, "K01", None, self.quote)
-        update_id = workflow.record_vendor_update(event_id, "K01", {"kind": "price", "price_unit": "total", "price_amount": 2800, "notes": "Rate changed"}, "2800")
+        update_id = workflow.record_vendor_update(event_id, "K01", {"kind": "price", "price_unit": "total", "price_amount": 2800, "notes": "Rate changed"}, "Base price is 2800 rupees in total")
         with self.assertRaisesRegex(ValueError, "pending price revision"):
             workflow.book("cake", "K01")
         workflow.decide_update(event_id, update_id, True)

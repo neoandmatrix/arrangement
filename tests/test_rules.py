@@ -8,6 +8,7 @@ import prompts
 import rules
 import store
 import workflow
+from price_fixture import checked_quote
 
 BRIEF = prompts.SAMPLE_BRIEF  # 40 guests, muhurat 2026-11-15 07:30
 
@@ -22,7 +23,7 @@ def caterer_quote(**overrides):
         "gst_included": True,
         "advance_amount": 5000,
     }
-    return {**quote, **overrides}
+    return checked_quote({**quote, **overrides}, "caterer")
 
 
 class RulesTest(unittest.TestCase):
@@ -54,7 +55,7 @@ class RulesTest(unittest.TestCase):
 
     def test_invented_amounts_are_unverified_and_block_on_price(self):
         said = "40 लोगों के लिए 480 रुपये प्रति प्लेट, transport का 1,000 अलग, 5,000 एडवांस"
-        # Limitation: a number the vendor said for a different charge still counts as heard.
+        # This legacy numeric helper is not the field-specific booking guard.
         quote = caterer_quote(price_amount=250, transport_charge=1000, extra_charges_amount=3000, advance_amount=5000)
         quote["unverified"] = rules.unverified_amounts(quote, said)
         self.assertEqual(quote["unverified"], ["price_amount", "extra_charges_amount"])
@@ -125,8 +126,8 @@ class NegotiationTest(unittest.TestCase):
 
     def test_competitor_total_ignores_unverified_and_unavailable_quotes(self):
         quotes = [
-            {**self.OFFER, "available": True, "price_amount": 400},
-            {**self.OFFER, "available": True, "price_amount": 300, "unverified": ["price_amount"]},
+            checked_quote({**self.OFFER, "available": True, "price_amount": 400}, "caterer"),
+            checked_quote({**self.OFFER, "available": True, "price_amount": 300, "unverified": ["price_amount"]}, "caterer"),
             {**self.OFFER, "available": False, "price_amount": 200},
         ]
         self.assertEqual(rules.best_competing_total(quotes, BRIEF), 400 * 40 + 1000)

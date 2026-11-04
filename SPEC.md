@@ -43,6 +43,20 @@ direct calls). Android uses the voice-communication microphone and hardware echo
 where available. Earpiece or headphones are preferred on phones without hardware AEC.
 Browser testing continues to use WebRTC. The single-current-event limitation remains.
 
+**Price safeguards:** every base price, transport charge, extra charge and advance must be
+grounded in the vendor's answer for that specific charge. Explicit zero is required for absent
+charges. Digit amounts with thousand/lakh/crore units are normalized; dates, times and guest
+counts are not money. Ambiguous wording prompts a separate question, not a guess.
+Unusually high charges, large advances and extreme rate changes need a second vendor statement
+of the amount. An advance cannot exceed the total. Caterers must give an actual GST-inclusive
+price; tax is never guessed or silently treated as zero. Unresolved amounts block booking,
+backup activation and revision approval, even after conversation retries are exhausted.
+Old quotes without field-level evidence need “Reconfirm prices”. Rechecking an already booked
+quote only refreshes verification if charges match; corrected charges become a pending quote
+for family approval. This is price verification, not the later booking-confirmation phase.
+Savings use a verified opening quote with its original pricing unit and charges; a total price
+is never reinterpreted as a per-plate opening price, and waived transport is counted accurately.
+
 **Vendors without the app** get a normal phone call through Twilio (`CALL_CHANNEL` code path). It is in the repo and tested with the simulator; it needs a real Indian number to go live.
 
 **Finding vendors:** the demo directory (synthetic vendors with locations), plus discovery near the pin: OpenStreetMap places by type (caterers, bakeries, photo studios, temples) and web search when a search key is set. Discovered businesses are shown as "found nearby" and never contacted in the demo (synthetic data only). The rules shortlist up to three reachable vendors per service by distance, reviews and rating.

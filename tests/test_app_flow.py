@@ -8,13 +8,14 @@ import prompts
 import rules
 import store
 import workflow
+from price_fixture import checked_quote
 
 KORAMANGALA = {**prompts.SAMPLE_NAAMKARAN, "location": {"lat": 12.9352, "lon": 77.6245}}
 
 
 def quote(price, **overrides):
-    return {"available": True, "price_amount": price, "price_unit": "total", "transport_charge": 0,
-            "advance_amount": 500, **overrides}
+    return checked_quote({"available": True, "price_amount": price, "price_unit": "total", "transport_charge": 0,
+            "advance_amount": 500, **overrides}, "cake")
 
 
 class ShortlistTest(unittest.TestCase):

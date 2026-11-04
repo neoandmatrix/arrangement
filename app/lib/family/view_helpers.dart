@@ -45,6 +45,7 @@ const vendorStatuses = {
   'callback': ('Asked to call back', Icons.phone_callback),
   'failed': ('Call failed', Icons.error_outline),
   'renegotiating': ('Renegotiating…', Icons.handshake),
+  'reconfirming': ('Rechecking prices…', Icons.fact_check_outlined),
   'approved': ('Booked', Icons.verified),
   'standby': ('Backup on standby', Icons.shield_outlined),
   'rejected': ('Rejected', Icons.block),

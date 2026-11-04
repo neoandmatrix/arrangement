@@ -5,11 +5,13 @@ import 'quote_details.dart';
 import 'view_helpers.dart';
 
 class BookingCard extends StatelessWidget {
-  const BookingCard({super.key, required this.service, required this.checkins, required this.onQuotes, required this.onCheckin});
+  const BookingCard({super.key, required this.service, required this.checkins, required this.onQuotes, required this.onCheckin, this.onReconfirm, this.rechecking = false});
   final Map<String, dynamic> service;
   final List<Map<String, dynamic>> checkins;
   final VoidCallback onQuotes;
   final Future<void> Function(int) onCheckin;
+  final VoidCallback? onReconfirm;
+  final bool rechecking;
 
   @override
   Widget build(BuildContext context) {
@@ -45,6 +47,9 @@ class BookingCard extends StatelessWidget {
               Expanded(child: Text(standby ? 'Backup: ${standbyVendor?['name'] ?? backup?['vendor_id']}' : 'No backup on standby', style: const TextStyle(fontSize: 13))),
             ]),
             if (vendor != null) QuoteWarning(vendor: vendor),
+            if (vendor?['needs_price_reconfirmation'] == true) OutlinedButton.icon(
+              onPressed: rechecking ? null : onReconfirm, icon: const Icon(Icons.fact_check_outlined), label: const Text('Reconfirm prices'),
+            ),
             const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: () => callPerson(context, primary!['vendor_id'] as String, '${vendor?['name'] ?? primary['vendor_id']}'),
