@@ -96,6 +96,9 @@ async def call(vendor: dict[str, Any], session: dict[str, Any], caller: dict[str
     if channel == "none":
         return {"result": "unreachable", "channel": "none", "call_id": None}
     async with CALL_LOCK:
+        from app_calls import busy
+        if busy(vendor["id"]):
+            return {"result": "no_answer", "channel": channel, "call_id": None}
         if channel == "app":
             return await _call_app(vendor, session, caller)
         return await _call_phone(vendor, session)
@@ -127,7 +130,7 @@ async def _call_app(vendor: dict[str, Any], session: dict[str, Any], caller: dic
 
 
 def _ring_message(pc: PendingCall) -> dict[str, Any]:
-    return {"type": "ring", "call_id": pc.call_id, "ring_seconds": RING_SECONDS, "ice_servers": ICE_SERVERS, **pc.caller}
+    return {"type": "ring", "call_id": pc.call_id, "ring_seconds": RING_SECONDS, "kind": "enquiry", **pc.caller}
 
 
 async def _ring(pc: PendingCall) -> None:

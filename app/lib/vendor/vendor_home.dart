@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../call_actions.dart';
 import '../format.dart';
 import '../settings.dart';
 import '../setup_screen.dart';
@@ -69,12 +70,16 @@ class _VendorHomeState extends State<VendorHome> {
           padding: const EdgeInsets.all(16),
           children: [
             _ReachabilityCard(),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('Demo vendor ID: ${Settings.vendorId}', style: Theme.of(context).textTheme.bodySmall),
+            ),
             if (_error != null) Card(child: ListTile(leading: const Icon(Icons.error_outline), title: Text(_error!))),
             const SizedBox(height: 8),
             if (event == null)
               const Card(child: ListTile(title: Text('No function right now'), subtitle: Text('When a family needs you, Bandobast will call this phone.')))
             else
-              _JobCard(event: event, jobs: _jobs!),
+              _JobCard(event: event, jobs: _jobs!, onRefresh: _load),
           ],
         ),
       ),
@@ -119,10 +124,11 @@ const _enquiryText = {
 };
 
 class _JobCard extends StatelessWidget {
-  const _JobCard({required this.event, required this.jobs});
+  const _JobCard({required this.event, required this.jobs, required this.onRefresh});
 
   final Map<String, dynamic> event;
   final Map<String, dynamic> jobs;
+  final Future<void> Function() onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -130,6 +136,7 @@ class _JobCard extends StatelessWidget {
     final quote = jobs['quote'] as Map<String, dynamic>?;
     final booking = jobs['booking'] as Map<String, dynamic>?;
     final checkins = (jobs['checkins'] as List?) ?? [];
+    final updates = (jobs['updates'] as List?) ?? [];
     final theme = Theme.of(context);
     return Card(
       child: Padding(
@@ -155,6 +162,32 @@ class _JobCard extends StatelessWidget {
               const SizedBox(height: 8),
               Chip(label: Text(booking['role'] == 'primary' ? 'Booked (${booking['status']})' : 'Backup (${booking['status']})')),
             ],
+            if (enquiry != null) ...[
+              const SizedBox(height: 12),
+              FilledButton.tonalIcon(
+                onPressed: () async {
+                  await callAssistant(context, mode: 'vendor_update');
+                  await onRefresh();
+                },
+                icon: const Icon(Icons.support_agent), label: const Text('Talk to Bandobast'),
+              ),
+              const Text('Report a revised rate, cancellation, delay or another update. New rates need the family’s approval.',
+                  style: TextStyle(fontSize: 12)),
+            ],
+            if (booking?['role'] == 'primary' && booking?['status'] == 'active' && event['family_id'] != null) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () => callPerson(context, event['family_id'] as String, '${event['family']} family'),
+                icon: const Icon(Icons.call), label: Text('Call family · ${event['family_id']}'),
+              ),
+            ],
+            for (final u in updates.take(3))
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.message_outlined),
+                title: Text('${(u['data'] as Map)['notes']}'),
+                subtitle: Text(u['status'] == 'pending' ? 'Awaiting family approval' : 'Update ${u['status']}'),
+              ),
             if (checkins.isNotEmpty) ...[
               const Divider(height: 24),
               Text('Follow-up calls', style: theme.textTheme.titleSmall),

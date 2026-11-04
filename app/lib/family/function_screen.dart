@@ -3,10 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../call_actions.dart';
 import '../format.dart';
 import '../settings.dart';
 import '../setup_screen.dart';
 import 'new_function_screen.dart';
+import 'vendor_update_card.dart';
+import '../vendor/ringer.dart';
 
 /// The family watches Bandobast work: vendors found, called, quotes in; then approves.
 class FunctionScreen extends StatefulWidget {
@@ -26,6 +29,7 @@ class _FunctionScreenState extends State<FunctionScreen> {
   @override
   void initState() {
     super.initState();
+    Ringer.instance.start(Settings.familyId);
     _load();
     _poll = Timer.periodic(const Duration(seconds: 3), (_) => _load());
   }
@@ -72,6 +76,7 @@ class _FunctionScreenState extends State<FunctionScreen> {
   void _newFunction() => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NewFunctionScreen()));
 
   Future<void> _switchRole() async {
+    Ringer.instance.stop();
     await Settings.setRole(null);
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const SetupScreen()), (_) => false);
@@ -101,6 +106,7 @@ class _FunctionScreenState extends State<FunctionScreen> {
     final services = (_state!['services'] as List).cast<Map<String, dynamic>>();
     final alerts = (_state!['alerts'] as List).cast<Map<String, dynamic>>();
     final checkins = (_state!['checkins'] as List).cast<Map<String, dynamic>>();
+    final updates = ((_state!['updates'] as List?) ?? []).cast<Map<String, dynamic>>();
     final theme = Theme.of(context);
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 40),
@@ -112,6 +118,8 @@ class _FunctionScreenState extends State<FunctionScreen> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('${event['label']}', style: theme.textTheme.headlineSmall),
               Text('${brief['family_name']} family · ${brief['area']}'),
+              Text('Demo family ID: ${Settings.familyId}', style: theme.textTheme.bodySmall),
+              const Text('Booked vendors can call this phone while it is connected.', style: TextStyle(fontSize: 12)),
               Text('${prettyDate(brief['date'] as String?)} · muhurat ${brief['start_time']} · ${brief['guests']} guests'),
               if (_state!['calling_now'] == true)
                 const Padding(
@@ -127,6 +135,10 @@ class _FunctionScreenState extends State<FunctionScreen> {
         ),
         if (_error != null) Card(child: ListTile(leading: const Icon(Icons.cloud_off), title: Text(_error!))),
         for (final a in alerts.take(5)) _AlertTile(alert: a),
+        for (final u in updates.where((u) => u['status'] == 'pending'))
+          VendorUpdateCard(key: ValueKey(u['id']), update: u, services: services, onRefresh: _load),
+        for (final u in updates.where((u) => u['status'] != 'pending').take(5))
+          VendorUpdateCard(key: ValueKey(u['id']), update: u, services: services, onRefresh: _load),
         for (final s in services) _ServiceCard(service: s, busy: _busy, onAct: _act),
         if (checkins.isNotEmpty) _CheckinsCard(checkins: checkins, services: services, onCall: (id) async {
           try {
@@ -155,6 +167,7 @@ class _Empty extends StatelessWidget {
             const SizedBox(height: 12),
             Text('Planning a function in Bengaluru?', style: Theme.of(context).textTheme.titleLarge, textAlign: TextAlign.center),
             const SizedBox(height: 6),
+            Text('Your demo family ID: ${Settings.familyId}', style: Theme.of(context).textTheme.bodySmall),
             const Text('Tell us what you need. We find vendors near the venue, call them in their language, '
                 'bargain politely, and bring you the quotes.', textAlign: TextAlign.center),
             if (error != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
@@ -194,6 +207,8 @@ const _status = {
   'approved': ('Booked', Icons.verified),
   'standby': ('Backup on standby', Icons.shield_outlined),
   'rejected': ('Rejected', Icons.block),
+  'replaced': ('Replaced by backup', Icons.swap_horiz),
+  'cancelled': ('Cancelled', Icons.event_busy),
 };
 
 class _ServiceCard extends StatelessWidget {
@@ -208,7 +223,7 @@ class _ServiceCard extends StatelessWidget {
     final theme = Theme.of(context);
     final vendors = (service['vendors'] as List).cast<Map<String, dynamic>>();
     final found = (service['discovered'] as List).cast<Map<String, dynamic>>();
-    final booked = (service['booking'] as Map).isNotEmpty;
+    final booked = ((service['booking'] as Map)['primary'] as Map?)?['status'] == 'active';
     return Card(
       margin: const EdgeInsets.only(top: 12),
       child: Padding(
@@ -227,6 +242,18 @@ class _ServiceCard extends StatelessWidget {
               busy: busy.contains(v['vendor_id']),
               onAct: onAct,
             ),
+          if (service['booking'] is Map && (service['booking'] as Map)['primary'] != null) ...[
+            const SizedBox(height: 8),
+            Builder(builder: (context) {
+              final primary = Map<String, dynamic>.from((service['booking'] as Map)['primary'] as Map);
+              final id = primary['vendor_id'] as String;
+              final name = vendors.where((v) => v['vendor_id'] == id).firstOrNull?['name'] ?? id;
+              return OutlinedButton.icon(
+                onPressed: primary['status'] == 'active' ? () => callPerson(context, id, '$name') : null,
+                icon: const Icon(Icons.call), label: Text('Call $name · $id'),
+              );
+            }),
+          ],
           if (found.isNotEmpty)
             ExpansionTile(
               tilePadding: EdgeInsets.zero,

@@ -1,10 +1,19 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 /// What this phone remembers: which server, the access key, and who is using it.
 class Settings {
   static late SharedPreferences _prefs;
 
-  static Future<void> load() async => _prefs = await SharedPreferences.getInstance();
+  static Future<void> load() async {
+    _prefs = await SharedPreferences.getInstance();
+    if (!_prefs.containsKey('family_id')) {
+      await _prefs.setString('family_id', 'F${const Uuid().v4().replaceAll('-', '').substring(0, 8)}');
+    }
+  }
+
+  static String get familyId => _prefs.getString('family_id')!;
+  static String get participantId => role == 'vendor' ? (vendorId ?? '') : familyId;
 
   /// e.g. http://192.168.1.20:8765 on the same Wi-Fi, or https://xyz.trycloudflare.com
   static String get server => _prefs.getString('server') ?? '';

@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../api.dart';
+import '../call_actions.dart';
 import 'function_screen.dart';
 
 const _bengaluru = LatLng(12.9716, 77.5946);
@@ -45,12 +46,80 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
   final Map<String, TextEditingController> _budget = {};
   final Map<String, TextEditingController> _wishes = {};
   bool _submitting = false;
+  bool _voiceBusy = false;
 
   @override
   void initState() {
     super.initState();
-    Api.get('/catalog').then((c) => setState(() => _catalog = c as Map<String, dynamic>)).catchError((e) {
-      setState(() => _loadError = '$e');
+    Api.get('/catalog').then((c) {
+      if (mounted) setState(() => _catalog = c as Map<String, dynamic>);
+    }).catchError((Object e) {
+      if (mounted) setState(() => _loadError = '$e');
+    });
+  }
+
+  @override
+  void dispose() {
+    for (final controller in [_area, _search, _guests, _family, _contact, _cuisine, _rituals, ..._budget.values, ..._wishes.values]) {
+      controller.dispose();
+    }
+    _map.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fillWithVoice() async {
+    setState(() => _voiceBusy = true);
+    final draft = <String, dynamic>{
+      if (_function != null) 'function_type': _function,
+      if (_variant != null) 'function_variant': _variant,
+      if (_family.text.trim().isNotEmpty) 'family_name': _family.text.trim(),
+      if (_contact.text.trim().isNotEmpty) 'contact_name': _contact.text.trim(),
+      if (_date != null) 'date': DateFormat('yyyy-MM-dd').format(_date!),
+      if (_muhurat != null) 'start_time': '${_muhurat!.hour.toString().padLeft(2, '0')}:${_muhurat!.minute.toString().padLeft(2, '0')}',
+      if (_function != null && _needs.isNotEmpty) 'needs': _needs.toList(),
+      if (_cuisine.text.trim().isNotEmpty) 'cuisine': _cuisine.text.trim(),
+      if (_rituals.text.trim().isNotEmpty) 'rituals': _rituals.text.trim(),
+      for (final n in _needs)
+        if (int.tryParse(_budget[n]?.text ?? '') != null) 'budget_$n': int.parse(_budget[n]!.text),
+      for (final n in _needs)
+        if ((_wishes[n]?.text.trim() ?? '').isNotEmpty) 'details_$n': _wishes[n]!.text.trim(),
+    };
+    // The default guest count is only a suggestion; voice asks the family to confirm it.
+    if (_guests.text != '40' && int.tryParse(_guests.text) != null) draft['guests'] = int.parse(_guests.text);
+    final started = await callAssistant(context, mode: 'form', language: _language, draft: draft, onForm: _applyVoice);
+    if (mounted) {
+      setState(() => _voiceBusy = false);
+      if (started) _snack('Review your details, select the venue, then tap Find and call vendors.');
+    }
+  }
+
+  void _applyVoice(Map<String, dynamic> draft) {
+    if (!mounted) return;
+    setState(() {
+      if (_functions.any((f) => f['key'] == draft['function_type'])) _function = draft['function_type'] as String;
+      if ((_fn?['variants'] as List? ?? []).any((v) => v['key'] == draft['function_variant'])) _variant = draft['function_variant'] as String;
+      if (draft['needs'] is List) {
+        _needs
+          ..clear()
+          ..addAll((draft['needs'] as List).whereType<String>().where((n) => _services.any((s) => s['key'] == n)));
+      }
+      final date = DateTime.tryParse('${draft['date'] ?? ''}');
+      if (date != null) _date = date;
+      final time = '${draft['start_time'] ?? ''}'.split(':');
+      if (time.length == 2) {
+        final h = int.tryParse(time[0]);
+        final m = int.tryParse(time[1]);
+        if (h != null && m != null && h >= 0 && h < 24 && m >= 0 && m < 60) _muhurat = TimeOfDay(hour: h, minute: m);
+      }
+      for (final entry in {'family_name': _family, 'contact_name': _contact, 'cuisine': _cuisine, 'rituals': _rituals, 'guests': _guests}.entries) {
+        if (draft[entry.key] != null) entry.value.text = '${draft[entry.key]}';
+      }
+      for (final s in _services) {
+        final n = s['key'] as String;
+        if (draft.containsKey('budget_$n')) _budget.putIfAbsent(n, TextEditingController.new).text = '${draft['budget_$n'] ?? ''}';
+        if (draft.containsKey('details_$n')) _wishes.putIfAbsent(n, TextEditingController.new).text = '${draft['details_$n'] ?? ''}';
+      }
+      // Deliberately never read location or area from the model.
     });
   }
 
@@ -87,6 +156,7 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
     });
     try {
       final r = await http.get(uri, headers: {'User-Agent': _userAgent});
+      if (!mounted) return;
       setState(() => _places = (jsonDecode(utf8.decode(r.bodyBytes)) as List).cast<Map<String, dynamic>>());
       if (_places.isEmpty) _snack('Nothing found in Bengaluru for "$q"');
     } catch (e) {
@@ -120,7 +190,9 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
     }
   }
 
-  void _snack(String text) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  void _snack(String text) {
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
 
   Future<void> _submit() async {
     final problems = <String>[
@@ -188,6 +260,32 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
         children: [
+          Card(
+            color: theme.colorScheme.primaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Icon(Icons.mic, color: theme.colorScheme.primary),
+                  const SizedBox(width: 8),
+                  Text('Tell us by voice', style: theme.textTheme.titleMedium),
+                ]),
+                const SizedBox(height: 6),
+                const Text('Bandobast asks one question at a time and fills your answers below. Choose the venue yourself, then review and submit.'),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  key: ValueKey('voice-$_language'),
+                  initialValue: _language,
+                  decoration: const InputDecoration(labelText: 'Conversation language', border: OutlineInputBorder(), isDense: true),
+                  items: [for (final l in (_catalog!['languages'] as List)) DropdownMenuItem(value: l['code'] as String, child: Text(l['name'] as String))],
+                  onChanged: (v) => setState(() => _language = v ?? 'hi-IN'),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(onPressed: _voiceBusy ? null : _fillWithVoice,
+                    icon: const Icon(Icons.mic), label: Text(_voiceBusy ? 'Opening voice call…' : 'Fill with voice')),
+              ]),
+            ),
+          ),
           _Section('Where is it?'),
           Row(children: [
             Expanded(
@@ -304,6 +402,7 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
           TextField(controller: _contact, decoration: const InputDecoration(labelText: 'Contact person', border: OutlineInputBorder())),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
+            key: ValueKey('family-$_language'),
             initialValue: _language,
             decoration: const InputDecoration(labelText: 'Your language', border: OutlineInputBorder()),
             items: [for (final l in (_catalog!['languages'] as List)) DropdownMenuItem(value: l['code'] as String, child: Text(l['name'] as String))],

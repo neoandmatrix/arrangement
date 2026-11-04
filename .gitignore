@@ -22,3 +22,6 @@ DEVELOPMENT.md
 google-services.json
 firebase-service-account*.json
 *-firebase-adminsdk-*.json
+
+AGENTS.md
+CLAUDE.md

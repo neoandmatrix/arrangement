@@ -12,7 +12,7 @@ Decided on 2026-11-03. Synthetic data only (contest rule): vendors are fictional
 | Vendors | Priest, caterer, decorator, cake, photographer, tent and sound | Venue booking, travel, return gifts |
 | City | Bengaluru (Kannada, Hindi, Telugu, English vendors) | Other cities |
 | Family | The Bandobast app (Flutter, Android); family-facing text in any of Gnani's 10 languages | WhatsApp (later) |
-| Vendors | The same app in vendor mode: calls ring in the app over the internet (WebRTC, Firebase push). Vendors without the app get a phone call (Twilio; code in the repo, needs a real number) | |
+| Vendors | The same app in vendor mode: calls ring in the app over the internet (PCM WebSocket audio, Firebase push). Vendors without the app get a phone call (Twilio; code in the repo, needs a real number) | |
 | Money | Record the agreed advance and remind the family | Collecting or sending payments |
 | After booking | Confirmation call, check-ins, backup switch, post-event rating | A day-of emergency line (the check-ins and backup switch cover a last-minute failure) |
 
@@ -24,6 +24,24 @@ One Flutter app, two roles chosen on first launch.
 **Family:** pin the venue on a map (OpenStreetMap), pick the occasion and variant, tick the services (the function's usual ones are pre-ticked), date and muhurat, guests, a budget and wishes per service. Submit, then watch it work: vendors found, called one by one, quotes in. Per quote: **approve**, **reject**, or **renegotiate** (Bandobast calls again and asks for a better price, the rules choosing the number). Approving books it and keeps the next best on standby.
 
 **Vendor:** pick which (demo) vendor you are. Calls from Bandobast ring full-screen, through Firebase push even when the app is closed, or the live connection while it's open. Answer and talk; the call runs through the same pipeline as every other channel. The vendor sees their enquiries and bookings.
+
+**Voice filling:** the planning form also offers “Fill with voice”, in the selected family language.
+Bandobast asks one question at a time and fills a draft. The map pin and area are never changed by
+the model. The family reviews the answers, selects the venue and submits explicitly.
+
+**Vendor callbacks:** “Talk to Bandobast” records a revised base rate, cancellation, delayed arrival
+or another note. Revised rates, including decreases, need family approval. Other charges remain
+unchanged. Operational risks use the existing backup rules. One update is collected per call.
+
+**Direct calls:** the family and its active booked vendor can call each other inside the app.
+Each family phone has a remembered temporary demo ID; vendors keep directory IDs such as C01.
+Direct audio is relayed through the backend, without an LLM, transcript or recording. This is
+demo identity under the shared app key, not production account authentication.
+
+**App audio:** mono PCM16 over WebSockets (16 kHz up, 24 kHz down for AI; 16 kHz both ways for
+direct calls). Android uses the voice-communication microphone and hardware echo cancellation
+where available. Earpiece or headphones are preferred on phones without hardware AEC.
+Browser testing continues to use WebRTC. The single-current-event limitation remains.
 
 **Vendors without the app** get a normal phone call through Twilio (`CALL_CHANNEL` code path). It is in the repo and tested with the simulator; it needs a real Indian number to go live.
 

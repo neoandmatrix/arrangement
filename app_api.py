@@ -18,6 +18,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 import browser
+import app_calls
 import catalog
 import channels
 import enquiries
@@ -106,8 +107,11 @@ class FunctionRequest(BaseModel):
 
 
 @api.post("/events")
-async def create_event(req: FunctionRequest):
+async def create_event(req: FunctionRequest, request: Request):
     """The family submitted the form: save it and start finding and calling vendors."""
+    participant_id = app_calls.identity(request)
+    if not store.participant(participant_id):
+        raise HTTPException(403, "Only a family phone can plan a function")
     args = req.model_dump()
     unknown = [n for n in req.needs if n not in catalog.CATEGORIES]
     problems = [f"unknown service {n}" for n in unknown]
@@ -118,6 +122,7 @@ async def create_event(req: FunctionRequest):
         raise HTTPException(400, "; ".join(problems))
     brief = {
         **args,
+        "family_id": participant_id,
         "city": "Bengaluru",
         "location": req.location.model_dump(),
         "budget": {k: v for k, v in req.budget.items() if v and k in req.needs},
@@ -130,11 +135,13 @@ async def create_event(req: FunctionRequest):
 
 
 @api.get("/events/current")
-async def current_event():
+async def current_event(request: Request):
     event = store.current_event()
     if not event:
         return {"event": None}
     event_id, brief = event
+    if brief.get("family_id") and not app_calls.owns_event(request.headers.get("x-participant-id", ""), brief):
+        return {"event": None}
     return event_status(event_id, brief)
 
 
@@ -195,20 +202,24 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
         "services": services,
         "alerts": store.alerts(event_id),
         "checkins": store.checkins(event_id),
+        "updates": store.updates(event_id),
         "calling_now": any(e["status"] in ("ringing", "in_call", "renegotiating") for e in status.values()),
     }
 
 
-def _event() -> tuple[int, dict[str, Any]]:
+def _event(request: Request) -> tuple[int, dict[str, Any]]:
     try:
-        return workflow.require_event()
+        event_id, brief = workflow.require_event()
+        if brief.get("family_id") and not app_calls.owns_event(request.headers.get("x-participant-id", ""), brief):
+            raise HTTPException(403, "This function belongs to another demo family")
+        return event_id, brief
     except LookupError as e:
         raise HTTPException(404, str(e))
 
 
 @api.post("/events/current/vendors/{vendor_id}/approve")
-async def approve(vendor_id: str):
-    _event()
+async def approve(vendor_id: str, request: Request):
+    _event(request)
     try:
         return workflow.book(store.vendor(vendor_id)["category"], vendor_id)
     except (KeyError, ValueError) as e:
@@ -216,8 +227,8 @@ async def approve(vendor_id: str):
 
 
 @api.post("/events/current/vendors/{vendor_id}/reject")
-async def reject(vendor_id: str):
-    _event()
+async def reject(vendor_id: str, request: Request):
+    _event(request)
     try:
         workflow.reject(vendor_id)
     except (KeyError, ValueError) as e:
@@ -226,8 +237,8 @@ async def reject(vendor_id: str):
 
 
 @api.post("/events/current/vendors/{vendor_id}/renegotiate")
-async def renegotiate(vendor_id: str):
-    event_id, brief = _event()
+async def renegotiate(vendor_id: str, request: Request):
+    event_id, brief = _event(request)
     try:
         vendor = store.vendor(vendor_id)
     except KeyError as e:
@@ -241,11 +252,13 @@ async def renegotiate(vendor_id: str):
 
 
 @api.post("/checkins/{checkin_id}/call")
-async def call_checkin(checkin_id: int):
+async def call_checkin(checkin_id: int, request: Request):
     """Demo: run a scheduled check-in call now instead of waiting for its time."""
-    event_id, brief = _event()
+    event_id, brief = _event(request)
     try:
-        store.checkin(checkin_id)
+        checkin = store.checkin(checkin_id)
+        if checkin["event_id"] != event_id or checkin["status"] != "pending":
+            raise HTTPException(400, "This check-in is no longer pending for this function")
     except (KeyError, LookupError) as e:
         raise HTTPException(404, str(e))
     enquiries.spawn(enquiries.checkin_call(event_id, brief, checkin_id))
@@ -271,18 +284,22 @@ class Device(BaseModel):
 
 
 @api.post("/vendor/register")
-async def register(device: Device):
+async def register(device: Device, request: Request):
     try:
         vendor = store.vendor(device.vendor_id)
     except KeyError as e:
         raise HTTPException(404, str(e))
+    if app_calls.identity(request) != device.vendor_id:
+        raise HTTPException(403, "This registration belongs to another vendor")
     store.save_device(device.vendor_id, device.push_token)
     return {"vendor": vendor, "push": bool(device.push_token)}
 
 
 @api.get("/vendor/{vendor_id}/jobs")
-async def vendor_jobs(vendor_id: str):
+async def vendor_jobs(vendor_id: str, request: Request):
     """This vendor's enquiries, bookings and upcoming check-ins for the current function."""
+    if app_calls.identity(request) != vendor_id:
+        raise HTTPException(403, "These jobs belong to another vendor")
     event = store.current_event()
     if not event:
         return {"event": None, "enquiry": None, "booking": None, "checkins": []}
@@ -296,11 +313,13 @@ async def vendor_jobs(vendor_id: str):
             "date": brief.get("date"),
             "start_time": brief.get("start_time"),
             "guests": brief.get("guests"),
+            "family_id": brief.get("family_id"),
         },
         "enquiry": store.enquiry(event_id, vendor_id),
         "quote": store.latest_quotes(event_id).get(vendor_id),
         "booking": booking,
         "checkins": [c for c in store.checkins(event_id) if c["vendor_id"] == vendor_id],
+        "updates": [u for u in store.updates(event_id) if u["vendor_id"] == vendor_id],
     }
 
 
@@ -311,6 +330,8 @@ async def answer(call_id: str, request: Request):
         call = channels.pending(call_id)
     except KeyError as e:
         raise HTTPException(404, str(e))
+    if app_calls.identity(request) != call.vendor_id:
+        raise HTTPException(403, "This call belongs to another vendor")
     data = await request.json()
     if request.method == "POST" and call.answered.is_set() and not data.get("pc_id"):
         raise HTTPException(409, "This call was already answered")
@@ -325,15 +346,34 @@ async def answer(call_id: str, request: Request):
 
 
 @api.post("/calls/{call_id}/decline")
-async def decline(call_id: str):
+async def decline(call_id: str, request: Request):
+    if call_id.startswith("DC"):
+        return await app_calls.end(call_id, request)
     try:
-        channels.pending(call_id).declined.set()
+        pc = channels.pending(call_id)
+        if app_calls.identity(request) != pc.vendor_id:
+            raise HTTPException(403, "This call belongs to another vendor")
+        pc.declined.set()
     except KeyError:
         pass  # already over
     return {"ok": True}
 
 
+@api.post("/updates/{update_id}/{decision}")
+async def decide_update(update_id: int, decision: str, request: Request):
+    event_id, _ = _event(request)
+    if decision not in ("approve", "reject"):
+        raise HTTPException(400, "Choose approve or reject")
+    try:
+        workflow.decide_update(event_id, update_id, decision == "approve")
+    except (ValueError, LookupError) as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+api.include_router(app_calls.api)
 router.include_router(api)
+router.include_router(app_calls.ws_router)
 
 
 @router.websocket("/vendor/ws")

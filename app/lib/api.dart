@@ -13,16 +13,19 @@ class ApiError implements Exception {
 
 /// The Bandobast server's app API (/app/...). Every request carries the access key.
 class Api {
+  static http.Client client = http.Client();
   static Uri uri(String path, [Map<String, String>? query]) =>
       Uri.parse('${Settings.server}/app$path').replace(queryParameters: query);
 
-  static Map<String, String> get _headers => {'X-App-Key': Settings.appKey, 'Content-Type': 'application/json'};
+  static Map<String, String> get _headers => {
+    'X-App-Key': Settings.appKey, 'X-Participant-ID': Settings.participantId, 'Content-Type': 'application/json',
+  };
 
   static Future<dynamic> get(String path, [Map<String, String>? query]) =>
-      _send(() => http.get(uri(path, query), headers: _headers));
+      _send(() => client.get(uri(path, query), headers: _headers));
 
   static Future<dynamic> post(String path, [Object? body]) =>
-      _send(() => http.post(uri(path), headers: _headers, body: jsonEncode(body ?? {})));
+      _send(() => client.post(uri(path), headers: _headers, body: jsonEncode(body ?? {})));
 
   static Future<dynamic> _send(Future<http.Response> Function() request) async {
     if (Settings.server.isEmpty) throw ApiError('Set the server address first');
@@ -43,12 +46,18 @@ class Api {
   }
 
   /// The vendor's live connection, on which calls ring.
-  static Uri vendorSocket(String vendorId) {
+  static Uri presenceSocket(String participantId) {
     final base = Uri.parse(Settings.server);
     return base.replace(
       scheme: base.scheme == 'https' ? 'wss' : 'ws',
-      path: '/app/vendor/ws',
-      queryParameters: {'vendor_id': vendorId, 'key': Settings.appKey},
+      path: '/app/presence/ws',
+      queryParameters: {'participant_id': participantId},
     );
+  }
+
+  static Uri audioSocket(String path) {
+    final base = Uri.parse(Settings.server);
+    final audio = Uri.parse(path);
+    return base.replace(scheme: base.scheme == 'https' ? 'wss' : 'ws', path: audio.path, query: audio.query);
   }
 }

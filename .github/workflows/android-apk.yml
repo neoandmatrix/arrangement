@@ -78,8 +78,11 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
 
+      # One APK per CPU type instead of one universal APK with all three (~94 MB, mostly WebRTC's
+      # native library x3). Almost every phone needs app-arm64-v8a-*.apk.
       - name: Build APK
-        run: flutter build apk --${{ inputs.build_type || 'release' }}
+        run: flutter build apk --${{ inputs.build_type || 'release' }} --split-per-abi
+      - run: ls -lh build/app/outputs/flutter-apk/*.apk
 
       - uses: actions/upload-artifact@v4
         with:

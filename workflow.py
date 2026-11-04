@@ -49,7 +49,10 @@ def book(category: str, vendor_id: str | None = None) -> dict[str, Any]:
     """Family approved: book their choice (or the top pick), keep the next best on standby, schedule check-ins."""
     event_id, brief = require_event()
     ranked = comparison(event_id, brief)[category]["ranked"]
-    bookable = [r["vendor_id"] for r in ranked if r["bookable"]]
+    pending_rates = {u["vendor_id"] for u in store.updates(event_id) if u["kind"] == "price" and u["status"] == "pending"}
+    if vendor_id in pending_rates:
+        raise ValueError("Review this vendor's pending price revision before booking")
+    bookable = [r["vendor_id"] for r in ranked if r["bookable"] and r["vendor_id"] not in pending_rates]
     if vendor_id and vendor_id not in bookable:
         raise ValueError(f"{vendor_id} has no bookable {category} quote")
     primary = vendor_id or (bookable[0] if bookable else None)
@@ -57,7 +60,7 @@ def book(category: str, vendor_id: str | None = None) -> dict[str, Any]:
         raise ValueError(f"No bookable {category} quote yet")
     backup_id = next((v for v in bookable if v != primary), None)
     result = {"top": primary, "backup": backup_id}
-    if any(b["category"] == category and b["role"] == "primary" for b in store.bookings(event_id)):
+    if any(b["category"] == category and b["role"] == "primary" and b["status"] == "active" for b in store.bookings(event_id)):
         raise ValueError(f"A {category} is already booked")
     store.set_booking(event_id, category, "primary", result["top"], "active")
     store.set_enquiry(event_id, primary, category, "approved")
@@ -88,7 +91,7 @@ def record_checkin(checkin_id: int, status: str, eta: str | None, notes: str | N
     """Store a check-in result, then let the rules decide whether to switch to the backup."""
     checkin = store.checkin(checkin_id)
     store.finish_checkin(checkin_id, status, eta, notes)
-    event_id, brief = require_event()
+    event_id, brief = store.event(checkin["event_id"])
     category = checkin["category"]
     history = [
         c
@@ -121,6 +124,8 @@ def _act_on_risk(
 
     store.set_booking(event_id, category, "primary", backup["vendor_id"], "active")
     store.set_booking(event_id, category, "backup", vendor_id, "replaced")
+    store.set_enquiry(event_id, vendor_id, category, "replaced")
+    store.set_enquiry(event_id, backup["vendor_id"], category, "approved")
     remaining = [
         (label, due)
         for label, due in rules.checkin_schedule(brief, category)
@@ -132,10 +137,73 @@ def _act_on_risk(
         event_id,
         "critical",
         f"{vendor['name']} ({category}): {risk['reason']}. Switched to backup {new_vendor['name']}; "
-        "confirmation call scheduled.",
+        "Please contact the new vendor to confirm the arrangement.",
     )
 
 
 def mark_unreachable(checkin_id: int) -> dict[str, str] | None:
     """The phone wasn't answered. In browser testing you trigger this from the dashboard."""
     return record_checkin(checkin_id, "unreachable", None, "No answer")
+
+
+def record_vendor_update(event_id: int, vendor_id: str, data: dict[str, Any], vendor_said: str) -> int:
+    """Price changes wait for family approval; operational risks use the same backup rules."""
+    _, brief = store.event(event_id)
+    vendor = store.vendor(vendor_id)
+    quote = store.latest_quotes(event_id).get(vendor_id)
+    if problems := rules.update_problems(data, quote, vendor_said):
+        raise ValueError("; ".join(problems))
+    kind = data["kind"]
+    payload = {"notes": data["notes"].strip()}
+    if kind == "price":
+        # Only the base price changes; extras and advance must not be guessed by the model.
+        payload["quote"] = {**quote, "price_amount": data["price_amount"],
+                            "unverified": [f for f in quote.get("unverified", []) if f != "price_amount"]}
+        payload["previous_price"] = quote["price_amount"]
+        for old in store.updates(event_id):
+            if old["vendor_id"] == vendor_id and old["kind"] == "price" and old["status"] == "pending":
+                store.resolve_update(old["id"], "superseded")
+    elif kind == "delayed":
+        payload["eta"] = data["eta"]
+    update_id = store.save_update(event_id, vendor_id, kind, payload, "pending" if kind == "price" else "received")
+    store.add_alert(event_id, "warn" if kind != "note" else "info", f"{vendor['name']}: {payload['notes']}"
+                    + (" — revised price needs your approval." if kind == "price" else ""))
+    active = any(b["vendor_id"] == vendor_id and b["role"] == "primary" and b["status"] == "active"
+                 for b in store.bookings(event_id))
+    if active and kind in ("cancelled", "delayed"):
+        risk = rules.assess_risk([{"status": kind, "eta": data.get("eta"), "label": "Vendor callback"}], brief, vendor["category"])
+        if risk:
+            _act_on_risk(event_id, brief, vendor["category"], vendor_id, risk)
+        if kind == "cancelled" and quote:
+            store.save_quote(event_id, vendor_id, None, {**quote, "available": False})
+            # No standby may exist: mark the cancelled primary inactive so the family
+            # can explicitly approve a replacement instead of getting stuck booked.
+            for b in store.bookings(event_id):
+                if b["role"] == "primary" and b["vendor_id"] == vendor_id and b["status"] == "active":
+                    store.set_booking(event_id, b["category"], "primary", vendor_id, "cancelled")
+                    store.set_enquiry(event_id, vendor_id, b["category"], "cancelled")
+    elif kind == "cancelled":
+        if quote:
+            store.save_quote(event_id, vendor_id, None, {**quote, "available": False})
+        store.set_enquiry(event_id, vendor_id, vendor["category"], "declined", note=payload["notes"])
+        for b in store.bookings(event_id):
+            if b["vendor_id"] == vendor_id and b["role"] == "backup" and b["status"] == "standby":
+                store.set_booking(event_id, b["category"], "backup", vendor_id, "cancelled")
+    return update_id
+
+
+def decide_update(event_id: int, update_id: int, approve: bool) -> None:
+    update = store.update(update_id)
+    if update["event_id"] != event_id or update["kind"] != "price" or update["status"] != "pending":
+        raise ValueError("This price revision is no longer pending for this function")
+    vendor_id = update["vendor_id"]
+    vendor = store.vendor(vendor_id)
+    if approve:
+        current = store.latest_quotes(event_id).get(vendor_id)
+        if not current or not current.get("available"):
+            raise ValueError("This vendor is no longer available")
+        # Retain current operational terms, changing only the explicitly approved base price.
+        store.save_quote(event_id, vendor_id, None, {**current, "price_amount": update["data"]["quote"]["price_amount"],
+                         "unverified": [f for f in current.get("unverified", []) if f != "price_amount"]})
+    store.resolve_update(update_id, "approved" if approve else "rejected")
+    store.add_alert(event_id, "info", f"{'Approved' if approve else 'Rejected'} revised price from {vendor['name']}.")

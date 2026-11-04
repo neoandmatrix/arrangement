@@ -108,7 +108,8 @@ async def webrtc_offer(
         _running.add(task)
         task.add_done_callback(_running.discard)
 
-    return await _handler.handle_web_request(
+    logger.info(f"WebRTC offer ({channel}) candidates: {_candidates(data.get('sdp', ''))}")
+    answer = await _handler.handle_web_request(
         request=SmallWebRTCRequest(
             sdp=data["sdp"],
             type=data["type"],
@@ -117,3 +118,18 @@ async def webrtc_offer(
         ),
         webrtc_connection_callback=on_connection,
     )
+    if answer:
+        logger.info(f"WebRTC answer ({channel}) candidates: {_candidates(answer.get('sdp', ''))}")
+    return answer
+
+
+def _candidates(sdp: str) -> list[str]:
+    """'udp 172.19.216.28:50123 host' per ICE candidate: why a call connects or doesn't."""
+    out = []
+    for line in sdp.splitlines():
+        if line.startswith("a=candidate:"):
+            parts = line.split()
+            # foundation component transport priority address port typ type ...
+            if len(parts) >= 8:
+                out.append(f"{parts[2].lower()} {parts[4]}:{parts[5]} {parts[7]}")
+    return out or ["none"]

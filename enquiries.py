@@ -73,7 +73,7 @@ async def call_vendor(
         store.set_enquiry(event_id, vendor_id, category, "no_answer", note="No app and no phone line")
         return "no_answer"
 
-    outcome = await channels.call(vendor, session, caller_info(brief, vendor, purpose))
+    outcome = await channels.call(vendor, {**session, "event_id": event_id}, caller_info(brief, vendor, purpose))
     call_id = outcome["call_id"]
     if outcome["result"] != "answered":
         status = {"declined": "declined", "no_answer": "no_answer"}.get(outcome["result"], "failed")
@@ -104,7 +104,7 @@ async def renegotiate(event_id: int, brief: dict[str, Any], vendor_id: str) -> s
 
 async def checkin_call(event_id: int, brief: dict[str, Any], checkin_id: int) -> str:
     checkin = store.checkin(checkin_id)
-    session = {"mode": "checkin", "vendor_id": checkin["vendor_id"], "checkin_id": checkin_id}
+    session = {"mode": "checkin", "vendor_id": checkin["vendor_id"], "checkin_id": checkin_id, "event_id": event_id}
     vendor = store.vendor(checkin["vendor_id"])
     outcome = await channels.call(vendor, session, caller_info(brief, vendor, "checkin"))
     if outcome["result"] != "answered":

@@ -90,6 +90,20 @@ CREATE TABLE IF NOT EXISTS alerts (
     level TEXT NOT NULL,         -- info | warn | critical
     message TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS participants (
+    id TEXT PRIMARY KEY,
+    push_token TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vendor_updates (
+    id INTEGER PRIMARY KEY,
+    event_id INTEGER NOT NULL,
+    vendor_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    data TEXT NOT NULL,
+    status TEXT NOT NULL
+);
 """
 
 
@@ -137,6 +151,53 @@ def current_event() -> tuple[int, dict[str, Any]] | None:
     with connect() as conn:
         row = conn.execute("SELECT id, brief FROM events ORDER BY id DESC LIMIT 1").fetchone()
     return (row["id"], json.loads(row["brief"])) if row else None
+
+
+def event(event_id: int) -> tuple[int, dict[str, Any]]:
+    with connect() as conn:
+        row = conn.execute("SELECT id, brief FROM events WHERE id = ?", (event_id,)).fetchone()
+    if not row:
+        raise LookupError("No such function")
+    return row["id"], json.loads(row["brief"])
+
+
+def save_participant(participant_id: str, push_token: str | None) -> None:
+    with connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO participants VALUES (?, ?, ?)", (participant_id, push_token, now()))
+
+
+def participant(participant_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM participants WHERE id = ?", (participant_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def save_update(event_id: int, vendor_id: str, kind: str, data: dict[str, Any], status: str) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO vendor_updates (event_id, vendor_id, created_at, kind, data, status) VALUES (?, ?, ?, ?, ?, ?)",
+            (event_id, vendor_id, now(), kind, json.dumps(data, ensure_ascii=False), status),
+        )
+    return cur.lastrowid
+
+
+def updates(event_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM vendor_updates WHERE event_id = ? ORDER BY id DESC", (event_id,)).fetchall()
+    return [{**dict(r), "data": json.loads(r["data"])} for r in rows]
+
+
+def update(update_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM vendor_updates WHERE id = ?", (update_id,)).fetchone()
+    if not row:
+        raise LookupError("No such vendor update")
+    return {**dict(row), "data": json.loads(row["data"])}
+
+
+def resolve_update(update_id: int, status: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE vendor_updates SET status = ? WHERE id = ?", (status, update_id))
 
 
 # Calls

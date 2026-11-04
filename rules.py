@@ -89,6 +89,29 @@ def landed_cost(quote: dict[str, Any], brief: dict[str, Any]) -> int | None:
     return int(base + extras)
 
 
+def update_problems(data: dict[str, Any], quote: dict[str, Any] | None, vendor_said: str) -> list[str]:
+    """An inbound update cannot silently invent a rate or change its pricing unit."""
+    kind = data.get("kind")
+    if kind not in ("price", "cancelled", "delayed", "note"):
+        return ["the type of update"]
+    if not isinstance(data.get("notes"), str) or not data["notes"].strip():
+        return ["what has changed"]
+    if kind == "price":
+        if not quote or not quote.get("available"):
+            return ["an existing available quote; collect a quote first"]
+        if data.get("price_unit") != quote.get("price_unit"):
+            return ["confirm the price in the existing quote's unit (per plate or total); changing units is not supported"]
+        amount = data.get("price_amount")
+        if type(amount) is not int or amount <= 0:
+            return ["a positive new price in rupees"]
+        if amount not in numbers_heard(vendor_said):
+            return ["the new price must be said by the vendor; ask them to say it"]
+    if kind == "delayed":
+        if not isinstance(data.get("eta"), str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", data["eta"]):
+            return ["the arrival time as HH:MM"]
+    return []
+
+
 def best_competing_total(competitor_quotes: list[dict[str, Any]], brief: dict[str, Any]) -> int | None:
     """Lowest real, verified total among other vendors' quotes for the same service, if any.
 

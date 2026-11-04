@@ -43,8 +43,12 @@ Map<String, dynamic> _ringOf(CallKitParams params) {
 final _opened = <String>{};
 
 void _openCall(CallKitParams params) {
-  if (!_opened.add(params.id)) return;
-  navigatorKey.currentState?.push(MaterialPageRoute(builder: (_) => CallScreen(ring: _ringOf(params), callkitId: params.id)));
+  final navigator = navigatorKey.currentState;
+  if (navigator == null) return;
+  final id = '${params.extra?['call_id'] ?? params.id}';
+  if (!_opened.add(id)) return;
+  navigator.push(MaterialPageRoute(builder: (_) => CallScreen(ring: _ringOf(params), callkitId: params.id)))
+      .whenComplete(() => _opened.remove(id));
 }
 
 Future<void> _openAcceptedCall() async {

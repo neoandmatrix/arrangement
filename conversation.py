@@ -7,7 +7,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -55,11 +55,11 @@ import workflow
 TTS_MODEL = "timbre-v3.0"
 TTS_VOICE = "Shivani"
 
-MODES = ("intake", "vendor_call", "checkin")
+MODES = ("intake", "vendor_call", "checkin", "form", "vendor_update")
 
 CALL_CONNECTED = "[The call has connected and the other person has picked up. Say your greeting now.]"
 
-TOOL_NAMES = ("end_call", "save_brief", "record_quote", "record_checkin")
+TOOL_NAMES = ("end_call", "save_brief", "record_quote", "record_checkin", "fill_form", "record_update")
 
 
 @dataclass
@@ -69,6 +69,10 @@ class SessionConfig:
     vendor_id: str | None = None
     checkin_id: int | None = None
     renegotiate: bool = False  # vendor_call: calling back about their quote, at the family's request
+    event_id: int | None = None
+    language: str = "hi-IN"
+    draft: dict[str, Any] = field(default_factory=dict)
+    on_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None
     call_id: str = field(default_factory=lambda: f"BR{uuid.uuid4().hex[:12]}")
 
     @classmethod
@@ -83,6 +87,9 @@ class SessionConfig:
             vendor_id=data.get("vendor_id") or None,
             checkin_id=int(checkin_id) if checkin_id not in (None, "") else None,
             renegotiate=str(data.get("renegotiate", "")).lower() in ("1", "true"),
+            event_id=data.get("event_id"),
+            language=data.get("language", "hi-IN"),
+            draft=dict(data.get("draft") or {}),
         )
         if call_id:
             cfg.call_id = call_id
@@ -105,7 +112,8 @@ END_CALL = FunctionSchema(
 )
 
 # What each conversation must record before it may hang up.
-REQUIRED_RESULT = {"intake": "save_brief", "vendor_call": "record_quote", "checkin": "record_checkin"}
+REQUIRED_RESULT = {"intake": "save_brief", "vendor_call": "record_quote", "checkin": "record_checkin",
+                   "form": "fill_form", "vendor_update": "record_update"}
 
 SAVE_BRIEF = FunctionSchema(
     name="save_brief",
@@ -174,6 +182,27 @@ RECORD_CHECKIN = FunctionSchema(
     required=["status"],
 )
 
+FILL_FORM = FunctionSchema(
+    name="fill_form",
+    description="Update only form fields the family actually answered. After the final read-back is confirmed, set complete=true.",
+    properties={**SAVE_BRIEF.properties, "complete": {"type": "boolean"}},
+    required=["complete"],
+)
+
+RECORD_UPDATE = FunctionSchema(
+    name="record_update",
+    description="Save the vendor's confirmed update. A new base price is a proposal, never an agreed booking change.",
+    properties={
+        "kind": {"type": "string", "enum": ["price", "cancelled", "delayed", "note"]},
+        "price_amount": {"type": ["integer", "null"], "description": "New base rate in the EXISTING quote's unit; null otherwise."},
+        "price_unit": {"type": ["string", "null"], "enum": ["per_plate", "total", None],
+                       "description": "Confirm the unit with the vendor for a price change. Must match the existing quote."},
+        "eta": {"type": ["string", "null"], "description": "HH:MM for a delay"},
+        "notes": {"type": "string", "description": "Brief factual summary in the vendor's language"},
+    },
+    required=["kind", "notes"],
+)
+
 
 def make_llm() -> OpenRouterLLMService | GroqLLMService:
     """Groq by default (lowest latency); LLM_PROVIDER=openrouter for Gemini Flash via OpenRouter."""
@@ -205,7 +234,14 @@ def _plan(cfg: SessionConfig) -> tuple[str, list[FunctionSchema], str, int | Non
     if cfg.mode == "intake":
         return prompts.intake_prompt(), [SAVE_BRIEF, END_CALL], "hi-IN", None
 
-    event_id, brief = workflow.require_event()
+    if cfg.mode == "form":
+        return prompts.form_prompt(cfg.language, cfg.draft), [FILL_FORM, END_CALL], cfg.language, None
+
+    event_id, brief = store.event(cfg.event_id) if cfg.event_id else workflow.require_event()
+    if cfg.mode == "vendor_update":
+        vendor = store.vendor(cfg.vendor_id)
+        quote = store.latest_quotes(event_id).get(vendor["id"])
+        return prompts.update_prompt(vendor, brief, quote), [RECORD_UPDATE, END_CALL], vendor["language"], event_id
     if cfg.mode == "vendor_call":
         vendor = store.vendor(cfg.vendor_id)
         quote = store.latest_quotes(event_id).get(vendor["id"])
@@ -261,6 +297,7 @@ async def run_conversation(
         tools=ToolsSchema(standard_tools=tools),
     )
     outcome: dict[str, Any] = {}
+    draft = dict(cfg.draft)
     previous_quote = store.latest_quotes(event_id).get(cfg.vendor_id) if cfg.renegotiate else None
     if previous_quote:
         # Savings are measured from their original opening price, not from this call's.
@@ -339,6 +376,57 @@ async def run_conversation(
         log.info(f"save_brief -> event {outcome['event_id']}: {brief}")
         await fn.result_callback({"ok": True})
 
+    async def fill_form(fn: FunctionCallParams) -> None:
+        if await answer_pending(fn):
+            return
+        args = {k: v for k, v in fn.arguments.items() if k in SAVE_BRIEF.properties and k not in ("city", "area")}
+        merged = {**draft, **args}
+        # Validate partial fields without allowing a model to pick or move the map pin.
+        problems = []
+        if "function_type" in args and args["function_type"] not in catalog.FUNCTIONS:
+            problems.append("a supported occasion")
+        function = catalog.FUNCTIONS.get(merged.get("function_type", ""))
+        if "function_variant" in args and (not function or args["function_variant"] not in function["variants"]):
+            problems.append("a variant of the selected occasion")
+        if "needs" in args and (not isinstance(args["needs"], list) or any(n not in catalog.CATEGORIES for n in args["needs"])):
+            problems.append("supported services")
+        if "guests" in args and (type(args["guests"]) is not int or args["guests"] <= 0):
+            problems.append("a positive guest count")
+        for key, value in args.items():
+            if key.startswith("budget_") and value is not None and (type(value) is not int or value < 0):
+                problems.append("a non-negative budget")
+        if fn.arguments.get("complete"):
+            problems += brief_problems({**merged, "city": "Bengaluru", "area": "Bengaluru"})
+        if problems:
+            await reject(fn, problems)
+            return
+        draft.update(args)
+        if cfg.on_result:
+            await cfg.on_result({"type": "form", "draft": draft, "complete": bool(fn.arguments.get("complete"))})
+        if fn.arguments.get("complete"):
+            mark_recorded("fill_form")
+        await fn.result_callback({"ok": True, "next": "Continue asking the next missing detail, or say review the form and select the venue before submitting if complete."})
+
+    async def record_update(fn: FunctionCallParams) -> None:
+        if await answer_pending(fn):
+            return
+        if "record_update" in outcome.get("recorded", set()):
+            await fn.result_callback({"ok": True, "next": "Already saved. Say goodbye and end_call."})
+            return
+        if not other_side_has_spoken():
+            await reject(fn, ["the vendor has not spoken yet; greet them and ask what changed"])
+            return
+        vendor_said = " ".join(_text(m) for m in context.get_messages() if _is_spoken_turn(m) and m["role"] == "user")
+        try:
+            update_id = workflow.record_vendor_update(event_id, cfg.vendor_id, dict(fn.arguments), vendor_said)
+        except ValueError as e:
+            await reject(fn, [str(e)])
+            return
+        mark_recorded("record_update")
+        if cfg.on_result:
+            await cfg.on_result({"type": "update_saved", "update_id": update_id})
+        await fn.result_callback({"ok": True, "next": "Tell them the family has been notified; a revised price still needs family approval. Say goodbye and end_call."})
+
     async def record_quote(fn: FunctionCallParams) -> None:
         if await answer_pending(fn):
             return
@@ -391,13 +479,14 @@ async def run_conversation(
         if category not in rules.NEGOTIABLE or not quote.get("available") or outcome.get("negotiation_done"):
             return False
         outcome["negotiation_round"] = outcome.get("negotiation_round", 0) + 1
-        _, brief = workflow.require_event()
+        _, brief = store.event(event_id)
         result = rules.counter_offer(
             category,
             quote,
             brief,
             round_no=outcome["negotiation_round"],
-            competing_total=rules.best_competing_total(workflow.competitor_quotes(cfg.vendor_id), brief),
+            competing_total=rules.best_competing_total(
+                [q for v, q in store.latest_quotes(event_id).items() if v != cfg.vendor_id and store.vendor(v)["category"] == category], brief),
             previous_ask_total=outcome.get("last_ask_total"),
         )
         log.info(f"negotiation round {outcome['negotiation_round']}: {quote.get('price_amount')} -> {result}")
@@ -425,6 +514,8 @@ async def run_conversation(
         "save_brief": save_brief,
         "record_quote": record_quote,
         "record_checkin": record_checkin,
+        "fill_form": fill_form,
+        "record_update": record_update,
     }
     for tool in tools:
         llm.register_function(tool.name, handlers[tool.name])
@@ -621,7 +712,7 @@ _PLACEHOLDER_RE = re.compile(r"\b(?:please|unknown|pending|n/?a|tbd)\b|कृप
 
 
 def _valid_time(value: Any) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"[0-2]\d:[0-5]\d", value) is not None
+    return isinstance(value, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value) is not None
 
 
 def brief_problems(args: dict[str, Any]) -> list[str]:

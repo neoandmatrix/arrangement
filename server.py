@@ -21,6 +21,7 @@ from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
 import app_api
+import app_calls
 import browser
 import catalog
 import prompts
@@ -39,6 +40,7 @@ STATIC = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     yield
+    await app_calls.close()
     await browser.close()
 
 
