@@ -30,6 +30,7 @@ import workflow
 import confirmations
 import confirmation_rules
 import backups
+import checkin_dispatch
 from conversation import brief_problems
 
 _LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
@@ -287,8 +288,12 @@ async def call_checkin(checkin_id: int, request: Request):
             raise HTTPException(400, 'Confirm the vendor booking before running check-ins')
     except (KeyError, LookupError) as e:
         raise HTTPException(404, str(e))
-    enquiries.spawn(enquiries.checkin_call(event_id, brief, checkin_id))
-    return {"ok": True}
+    try:
+        attempt_id = checkin_dispatch.enqueue(checkin_id, manual=True)
+    except ValueError as error:
+        raise HTTPException(409, str(error))
+    enquiries.spawn(checkin_dispatch.run_attempt(attempt_id))
+    return {'ok': True, 'attempt_id': attempt_id}
 
 
 @api.post("/events/current/vendors/{vendor_id}/reconfirm")

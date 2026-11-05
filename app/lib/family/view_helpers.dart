@@ -25,7 +25,10 @@ String vendorName(List<Map<String, dynamic>> services, String id) {
 String shortDateTime(Object? value) {
   final text = '${value ?? ''}';
   final date = DateTime.tryParse(text);
-  return date == null ? text : DateFormat('d MMM · h:mm a').format(date);
+  if (date == null) return text;
+  final venue = RegExp(r'(?:Z|[+-]\d{2}:?\d{2})$').hasMatch(text)
+      ? date.toUtc().add(const Duration(hours: 5, minutes: 30)) : date;
+  return '${DateFormat('d MMM · h:mm a').format(venue)} IST';
 }
 
 IconData serviceIcon(Object? category) => switch (category) {

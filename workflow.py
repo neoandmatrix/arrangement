@@ -6,6 +6,7 @@ goes through here, so the rules in rules.py are applied the same way from every 
 
 from typing import Any
 import uuid
+import re
 
 import rules
 import price_safety
@@ -13,6 +14,7 @@ import store
 import confirmation_rules
 import confirmations
 import backups
+import checkin_dispatch
 
 
 def require_event() -> tuple[int, dict[str, Any]]:
@@ -91,16 +93,30 @@ def reject(vendor_id: str) -> None:
     store.set_enquiry(event_id, vendor_id, store.vendor(vendor_id)["category"], "rejected")
 
 
-def record_checkin(checkin_id: int, status: str, eta: str | None, notes: str | None) -> dict[str, str] | None:
+def record_checkin(checkin_id: int, status: str, eta: str | None, notes: str | None, *, attempt_id: int | None = None, call_id: str | None = None) -> dict[str, str] | None:
     """Store a check-in result, then let the rules decide whether to switch to the backup."""
     checkin = store.checkin(checkin_id)
+    if status not in ('confirmed', 'delayed', 'cancelled', 'unsure', 'unreachable'):
+        raise ValueError('Invalid check-in result')
+    if checkin['status'] != 'pending':
+        raise ValueError('This check-in already has a result')
+    if status == 'delayed' and (not isinstance(eta, str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', eta)):
+        raise ValueError('A delayed result requires a valid arrival time')
+    if attempt_id is not None:
+        attempt, current = checkin_dispatch.validate_attempt(attempt_id)
+        if current['id'] != checkin_id or attempt['status'] != 'running' or (call_id and attempt['call_id'] not in (None, call_id)):
+            raise ValueError('This result belongs to another call or attempt')
     primary = confirmations.primary(checkin['event_id'], checkin['category'])
     if not primary or primary['vendor_id'] != checkin['vendor_id'] or primary['status'] != 'active':
         raise ValueError('Check-ins only apply to the currently active booked vendor')
     confirmed = confirmations.summary(checkin['event_id'], checkin['category'])
     if not confirmed or confirmed['status'] != 'confirmed':
         raise ValueError('Vendor booking confirmation is required before check-ins')
-    store.finish_checkin(checkin_id, status, eta, notes)
+    if checkin.get('confirmation_id') not in (None, confirmed['id']):
+        raise ValueError('This result belongs to an older booking approval')
+    if not store.finish_checkin(checkin_id, status, eta, notes, attempt_id=attempt_id):
+        raise ValueError('This check-in was already completed or superseded')
+    store.set_enquiry(checkin['event_id'], checkin['vendor_id'], checkin['category'], 'confirmed')
     event_id, brief = store.event(checkin["event_id"])
     category = checkin["category"]
     history = [
@@ -125,9 +141,9 @@ def _act_on_risk(
     backups.begin_replacement(event_id, category, vendor_id, risk['reason'])
 
 
-def mark_unreachable(checkin_id: int) -> dict[str, str] | None:
+def mark_unreachable(checkin_id: int, *, attempt_id: int | None = None) -> dict[str, str] | None:
     """The phone wasn't answered. In browser testing you trigger this from the dashboard."""
-    return record_checkin(checkin_id, "unreachable", None, "No answer")
+    return record_checkin(checkin_id, "unreachable", None, "No answer", attempt_id=attempt_id)
 
 
 def record_vendor_update(event_id: int, vendor_id: str, data: dict[str, Any], vendor_said: str | list[dict[str, str]], *, call_id: str | None = None) -> int:

@@ -344,7 +344,7 @@ def assess_risk(
 
     action 'activate_backup' hands the job to the standby vendor; 'warn' tells the family.
     """
-    done = [c for c in checkins if c["status"] != "pending"]
+    done = [c for c in checkins if c['status'] in ('confirmed', 'delayed', 'cancelled', 'unsure', 'unreachable')]
     if not done:
         return None
     last = done[-1]
@@ -361,14 +361,17 @@ def assess_risk(
     if unreachable_streak >= 2:
         return {"action": "activate_backup", "reason": "Unreachable on two check-ins in a row"}
 
-    if last["status"] == "delayed" and last.get("eta"):
-        eta = datetime.fromisoformat(f"{brief['date']}T{last['eta']}")
+    if last['status'] in ('confirmed', 'delayed') and last.get('eta'):
+        eta = datetime.fromisoformat(f"{arrive_by.date().isoformat()}T{last['eta']}")
+        if eta < arrive_by - timedelta(hours=12):
+            eta += timedelta(days=1)
         if eta > arrive_by:
             return {
                 "action": "activate_backup",
                 "reason": f"ETA {last['eta']} is after the required arrival {arrive_by:%H:%M}",
             }
-        return {"action": "warn", "reason": f"Running late but should make it (ETA {last['eta']})"}
+        if last['status'] == 'delayed':
+            return {"action": "warn", "reason": f"Running late but should make it (ETA {last['eta']})"}
 
     is_final = last["label"].startswith("Final")
     if last["status"] == "unsure" and is_final:

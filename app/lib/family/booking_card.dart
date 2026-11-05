@@ -121,13 +121,20 @@ class _FollowupTileState extends State<FollowupTile> {
 
   @override
   Widget build(BuildContext context) {
-    final due = DateTime.tryParse('${widget.checkin['due_at']}');
-    final overdue = due != null && due.isBefore(DateTime.now());
+    final checkin = widget.checkin;
+    final dispatch = '${checkin['dispatch_state'] ?? 'scheduled'}';
+    final expiry = DateTime.tryParse('${checkin['expires_at'] ?? ''}');
+    final expired = expiry != null && expiry.isBefore(DateTime.now());
+    final running = dispatch == 'queued' || dispatch == 'running';
     return ListTile(
       contentPadding: EdgeInsets.zero,
       title: Text('${widget.checkin['label']}'),
-      subtitle: Text([if (widget.vendorName != null) widget.vendorName!, shortDateTime(widget.checkin['due_at']), if (overdue) 'Overdue · not called yet'].join('\n')),
-      trailing: TextButton(onPressed: _busy ? null : _call, child: Text(_busy ? 'Calling…' : 'Call now')),
+      subtitle: Text([if (widget.vendorName != null) widget.vendorName!, shortDateTime(checkin['due_at']),
+        if (running) dispatch == 'queued' ? 'Queued for follow-up' : 'Follow-up call in progress',
+        if (checkin['next_attempt_at'] != null) 'Retry: ${shortDateTime(checkin['next_attempt_at'])}',
+        if (expired && !running) 'Call window passed · will not be dialled late'].join('\n')),
+      trailing: TextButton(onPressed: _busy || running || expired ? null : _call,
+          child: Text(_busy || dispatch == 'running' ? 'Calling…' : dispatch == 'queued' ? 'Queued' : expired ? 'Expired' : 'Call now')),
     );
   }
 }

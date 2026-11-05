@@ -1,6 +1,8 @@
 import 'package:bandobast/family/activity_timeline.dart';
 import 'package:bandobast/family/family_dashboard.dart';
 import 'package:bandobast/family/quote_details.dart';
+import 'package:bandobast/family/booking_card.dart';
+import 'package:bandobast/family/view_helpers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -61,6 +63,10 @@ Widget dashboard(Map<String, dynamic> state, {void Function(String, String, Stri
 );
 
 void main() {
+  test('follow-up times remain IST when stored with a timezone offset', () {
+    expect(shortDateTime('2026-11-19T12:30:00Z'), '19 Nov · 6:00 PM IST');
+    expect(shortDateTime('2026-11-19T18:00:00+05:30'), '19 Nov · 6:00 PM IST');
+  });
   test('timeline removes duplicate reports, retains decisions, and excludes pending calls', () {
     final state = fixture();
     final entries = timelineEntries(services: (state['services'] as List).cast<Map<String, dynamic>>(),
@@ -262,5 +268,13 @@ void main() {
     expect(find.text('Backup · Confirming replacement'), findsOneWidget);
     expect(find.text('The replacement is not active until its booking confirmation is complete.'), findsOneWidget);
     expect(find.text('Confirmed'), findsNothing);
+  });
+
+  testWidgets('queued follow-ups disable duplicate Call now actions', (tester) async {
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: FollowupTile(
+      checkin: const {'id': 1, 'label': 'D-1 confirmation', 'due_at': '2026-11-19T18:00', 'dispatch_state': 'queued'}, onCall: (_) async {},
+    ))));
+    expect(find.text('Queued'), findsOneWidget);
+    expect(tester.widget<TextButton>(find.widgetWithText(TextButton, 'Queued')).onPressed, isNull);
   });
 }

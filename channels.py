@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -86,7 +87,7 @@ def pending(call_id: str) -> PendingCall:
     return call
 
 
-async def call(vendor: dict[str, Any], session: dict[str, Any], caller: dict[str, Any]) -> dict[str, Any]:
+async def call(vendor: dict[str, Any], session: dict[str, Any], caller: dict[str, Any], *, before_dial: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Reach one vendor and hold the line until the conversation ends.
 
     Returns {"result": answered | declined | no_answer | unreachable | failed, "channel", "call_id"}.
@@ -94,11 +95,15 @@ async def call(vendor: dict[str, Any], session: dict[str, Any], caller: dict[str
     """
     channel = channel_for(vendor)
     if channel == "none":
+        if before_dial and not before_dial():
+            return {'result': 'stale', 'channel': channel, 'call_id': None}
         return {"result": "unreachable", "channel": "none", "call_id": None}
     async with CALL_LOCK:
+        if before_dial and not before_dial():
+            return {'result': 'stale', 'channel': channel, 'call_id': None}
         from app_calls import busy
         if busy(vendor["id"]):
-            return {"result": "no_answer", "channel": channel, "call_id": None}
+            return {"result": "busy", "channel": channel, "call_id": None}
         if channel == "app":
             return await _call_app(vendor, session, caller)
         return await _call_phone(vendor, session)
@@ -109,6 +114,7 @@ async def _call_app(vendor: dict[str, Any], session: dict[str, Any], caller: dic
     pc = PendingCall(call_id=call_id, vendor_id=vendor["id"], session=session, caller=caller)
     _calls[call_id] = pc
     result = {"channel": "app", "call_id": call_id}
+    answered = declined = None
     try:
         await _ring(pc)
         answered = asyncio.create_task(pc.answered.wait())
@@ -125,7 +131,20 @@ async def _call_app(vendor: dict[str, Any], session: dict[str, Any], caller: dic
             logger.warning(f"Call {call_id} ran over {MAX_CALL_SECONDS}s")
             return {**result, "result": "failed"}
         return {**result, "result": "answered"}
+    except asyncio.CancelledError:
+        import app_calls
+        await _broadcast(vendor['id'], {'type': 'cancel', 'call_id': call_id})
+        await app_calls.finish(call_id, 'Call interrupted by server shutdown')
+        if pc.answered.is_set():
+            try:
+                await asyncio.wait_for(pc.finished.wait(), 5)
+            except TimeoutError:
+                pass
+        raise
     finally:
+        for waiter in (answered, declined):
+            if waiter:
+                waiter.cancel()
         _calls.pop(call_id, None)
 
 
@@ -167,6 +186,7 @@ async def _call_phone(vendor: dict[str, Any], session: dict[str, Any]) -> dict[s
             start_call,
             CallRequest(to=vendor["phone"], mode=session["mode"], vendor_id=vendor["id"], checkin_id=session.get("checkin_id"),
                 confirmation_id=session.get('confirmation_id'), event_id=session.get('event_id'),
+                checkin_attempt_id=session.get('checkin_attempt_id'),
                 reconfirm=str(session.get('reconfirm', '')).lower() in ('1', 'true'),
                 renegotiate=str(session.get('renegotiate', '')).lower() in ('1', 'true')),
         )

@@ -196,8 +196,12 @@ The function: {_brief_summary(brief)}
 Call flow:
 1. Greet, say you are calling on behalf of the {brief['family_name']} family, and remind them of the booking.
 2. Confirm they are still coming as planned. If it's the day of the function, ask where they are and what time they will reach.
+   Times are venue-local IST. If they are busy and request a callback, ask when; end_call with callback_requested=true
+   and callback_at as an ISO date/time in IST if supplied. Never invent a callback time or record a no-answer yourself.
 3. If they hesitate, gently ask whether there is any problem, so the family can plan.
 4. Call record_checkin with the status: confirmed, delayed (with the ETA as HH:MM in 24-hour time), cancelled, or unsure.
+   If they give an arrival time, record it even if they say they are confirmed. Read back the result and arrival time
+   and wait for a clear yes before saving confirmed; a vague or conditional answer is not confirmation.
 5. Thank them and call end_call.
 """
 

@@ -6,9 +6,10 @@ Vendors are read-only synthetic data in data/vendors.json (the contest allows sy
 import json
 import os
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import checkin_policy
 
 ROOT = Path(__file__).parent
 DB_PATH = Path(os.environ.get("BANDOBAST_DB", ROOT / "bandobast.db"))
@@ -59,7 +60,12 @@ CREATE TABLE IF NOT EXISTS checkins (
     status TEXT NOT NULL,        -- pending | confirmed | delayed | cancelled | unsure | unreachable
     eta TEXT,
     notes TEXT,
-    done_at TEXT
+    done_at TEXT,
+    confirmation_id INTEGER,
+    dispatch_state TEXT NOT NULL DEFAULT 'scheduled',
+    current_attempt_id INTEGER,
+    next_attempt_at TEXT,
+    expires_at TEXT
 );
 CREATE TABLE IF NOT EXISTS enquiries (
     event_id INTEGER NOT NULL,
@@ -123,11 +129,22 @@ CREATE TABLE IF NOT EXISTS booking_confirmations (
     parent_vendor_id TEXT,
     family_approved INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS checkin_attempts (
+    id INTEGER PRIMARY KEY,
+    checkin_id INTEGER NOT NULL,
+    origin TEXT NOT NULL,
+    status TEXT NOT NULL,
+    call_id TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT
+);
 """
 
 
 def now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return checkin_policy.now().isoformat(timespec='seconds')
 
 
 def connect() -> sqlite3.Connection:
@@ -139,6 +156,13 @@ def connect() -> sqlite3.Connection:
             'parent_confirmation_id': 'INTEGER', 'parent_vendor_id': 'TEXT', 'family_approved': 'INTEGER NOT NULL DEFAULT 0'}.items():
         if name not in columns:
             conn.execute(f'ALTER TABLE booking_confirmations ADD COLUMN {name} {definition}')
+    checkin_columns = {row['name'] for row in conn.execute('PRAGMA table_info(checkins)')}
+    for name, definition in {'confirmation_id': 'INTEGER', 'dispatch_state': "TEXT NOT NULL DEFAULT 'scheduled'",
+            'current_attempt_id': 'INTEGER', 'next_attempt_at': 'TEXT', 'expires_at': 'TEXT'}.items():
+        if name not in checkin_columns:
+            conn.execute(f'ALTER TABLE checkins ADD COLUMN {name} {definition}')
+    conn.execute("UPDATE checkins SET dispatch_state = 'completed' WHERE status != 'pending' AND dispatch_state = 'scheduled'")
+    conn.commit()
     return conn
 
 
@@ -420,8 +444,10 @@ def complete_confirmation(confirmation_id: int, call_id: str, answer_count: int,
         conn.execute("UPDATE bookings SET status = 'active' WHERE event_id = ? AND category = ? AND role = 'primary'", (row['event_id'], row['category']))
         conn.execute("UPDATE enquiries SET status = 'confirmed', updated_at = ? WHERE event_id = ? AND vendor_id = ?", (now(), row['event_id'], row['vendor_id']))
         conn.execute("DELETE FROM checkins WHERE event_id = ? AND category = ? AND status = 'pending'", (row['event_id'], row['category']))
-        conn.executemany("INSERT INTO checkins (event_id, vendor_id, category, label, due_at, status) VALUES (?, ?, ?, ?, ?, 'pending')",
-            [(row['event_id'], row['vendor_id'], row['category'], label, due) for label, due in schedule])
+        terms = json.loads(row['terms'])
+        conn.executemany("INSERT INTO checkins (event_id, vendor_id, category, label, due_at, status, confirmation_id, expires_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+            [(row['event_id'], row['vendor_id'], row['category'], label, due, confirmation_id,
+              checkin_policy.expires_at(terms, row['category'], label, due).isoformat(timespec='seconds') if due is not None else None) for label, due in schedule])
         conn.execute('INSERT INTO alerts (event_id, created_at, level, message) VALUES (?, ?, ?, ?)', (row['event_id'], now(), 'info', message))
         return True
 
@@ -468,12 +494,81 @@ def checkins(event_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def finish_checkin(checkin_id: int, status: str, eta: str | None, notes: str | None) -> None:
+def finish_checkin(checkin_id: int, status: str, eta: str | None, notes: str | None, *, attempt_id: int | None = None) -> bool:
     with connect() as conn:
-        conn.execute(
-            "UPDATE checkins SET status = ?, eta = ?, notes = ?, done_at = ? WHERE id = ?",
-            (status, eta, notes, now(), checkin_id),
-        )
+        conn.execute('BEGIN IMMEDIATE')
+        if attempt_id is None:
+            changed = conn.execute("UPDATE checkins SET status = ?, eta = ?, notes = ?, done_at = ?, dispatch_state = 'completed' WHERE id = ? AND status = 'pending' AND dispatch_state = 'scheduled'",
+                (status, eta, notes, now(), checkin_id)).rowcount
+        else:
+            changed = conn.execute("UPDATE checkins SET status = ?, eta = ?, notes = ?, done_at = ?, dispatch_state = 'completed' WHERE id = ? AND status = 'pending' AND current_attempt_id = ? AND dispatch_state = 'running'",
+                (status, eta, notes, now(), checkin_id, attempt_id)).rowcount
+            if changed:
+                conn.execute("UPDATE checkin_attempts SET status = 'completed', finished_at = ? WHERE id = ? AND status = 'running'", (now(), attempt_id))
+        return changed == 1
+
+
+def checkin_attempt(attempt_id: int) -> dict:
+    with connect() as conn:
+        row = conn.execute('SELECT * FROM checkin_attempts WHERE id = ?', (attempt_id,)).fetchone()
+    if not row:
+        raise LookupError('No such check-in attempt')
+    return dict(row)
+
+
+def checkin_attempts(checkin_id: int) -> list[dict]:
+    with connect() as conn:
+        return [dict(row) for row in conn.execute('SELECT * FROM checkin_attempts WHERE checkin_id = ? ORDER BY id', (checkin_id,)).fetchall()]
+
+
+def enqueue_checkin(checkin_id: int, confirmation_id: int, expiry: str, origin: str, at: str) -> int | None:
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute("SELECT * FROM checkins WHERE id = ? AND status = 'pending' AND dispatch_state = 'scheduled'", (checkin_id,)).fetchone()
+        if not row:
+            return None
+        cur = conn.execute("INSERT INTO checkin_attempts (checkin_id, origin, status, created_at) VALUES (?, ?, 'queued', ?)", (checkin_id, origin, at))
+        attempt_id = cur.lastrowid
+        conn.execute("UPDATE checkins SET dispatch_state = 'queued', current_attempt_id = ?, confirmation_id = ?, expires_at = ?, next_attempt_at = NULL WHERE id = ?", (attempt_id, confirmation_id, expiry, checkin_id))
+        return attempt_id
+
+
+def claim_checkin_attempt(attempt_id: int, at: str) -> bool:
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute("SELECT a.checkin_id FROM checkin_attempts a JOIN checkins c ON c.id = a.checkin_id WHERE a.id = ? AND a.status = 'queued' AND c.status = 'pending' AND c.current_attempt_id = a.id AND c.dispatch_state = 'queued'", (attempt_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("UPDATE checkin_attempts SET status = 'running', started_at = ? WHERE id = ?", (at, attempt_id))
+        conn.execute("UPDATE checkins SET dispatch_state = 'running' WHERE id = ?", (row['checkin_id'],))
+        return True
+
+
+def bind_checkin_attempt(attempt_id: int, call_id: str) -> bool:
+    with connect() as conn:
+        return conn.execute("UPDATE checkin_attempts SET call_id = ? WHERE id = ? AND status = 'running' AND (call_id IS NULL OR call_id = ?)", (call_id, attempt_id, call_id)).rowcount == 1
+
+
+def release_checkin_attempt(attempt_id: int, status: str, reason: str, at: str, next_attempt_at: str | None) -> None:
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute("SELECT checkin_id FROM checkin_attempts WHERE id = ? AND status IN ('queued', 'running')", (attempt_id,)).fetchone()
+        if not row:
+            return
+        conn.execute('UPDATE checkin_attempts SET status = ?, reason = ?, finished_at = ? WHERE id = ?', (status, reason, at, attempt_id))
+        conn.execute("UPDATE checkins SET dispatch_state = 'scheduled', current_attempt_id = NULL, next_attempt_at = ?, notes = ? WHERE id = ? AND status = 'pending' AND current_attempt_id = ?", (next_attempt_at, reason, row['checkin_id'], attempt_id))
+
+
+def skip_checkin(checkin_id: int, reason: str, at: str) -> bool:
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute("SELECT current_attempt_id FROM checkins WHERE id = ? AND status = 'pending' AND dispatch_state IN ('scheduled', 'queued')", (checkin_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("UPDATE checkins SET status = 'skipped', dispatch_state = 'skipped', notes = ?, done_at = ? WHERE id = ?", (reason, at, checkin_id))
+        if row['current_attempt_id']:
+            conn.execute("UPDATE checkin_attempts SET status = 'stale', reason = ?, finished_at = ? WHERE id = ? AND status = 'queued'", (reason, at, row['current_attempt_id']))
+        return True
 
 
 # Alerts (shown on the dashboard; later sent to the family on WhatsApp)

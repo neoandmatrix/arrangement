@@ -83,7 +83,20 @@ Standby and activation attempts have separate immutable IDs and are bound to the
 approval. Old standby replies cannot complete a newer activation or a changed backup selection.
 The family can retry or choose another quoted backup. No-answer, decline, restart or failed
 activation leaves an explicit unconfirmed-replacement warning, not a pretend successful switch.
-Automatic check-in dispatch remains the next phase.
+**Automatic check-ins:** a lightweight server worker polls the current function's scheduled
+follow-ups and dispatches one due call at a time. Naive venue times mean IST, not the server's
+local timezone. Each check-in is bound to the current vendor booking confirmation and each
+call has a durable attempt ID. Automatic calls and “Call now” share the same atomic claim;
+duplicate clicks, workers or stale call results cannot complete another attempt.
+Calls are revalidated after waiting for the Gnani call lock. D-3/D-1 calls have a two-hour useful
+window; morning calls thirty minutes and final ETA calls ten minutes, never beyond required
+arrival. Expired calls are skipped with an alert, not dialled in a catch-up burst or counted as
+vendor no-answers. Service failures/restarts retry up to three attempts within the window.
+A genuine no-answer completes one scheduled check-in once; system failures, busy channels and
+callbacks do not manufacture a second no-answer strike. Vendor-requested callback times are
+honoured if still useful. The family sees queued/running/retry/skipped states and venue times.
+AUTO_CHECKINS=0 disables automatic dispatch for manual-only testing; the default is enabled.
+The server must stay running. Only the latest/current function is dispatched in this demo.
 
 **Vendors without the app** get a normal phone call through Twilio (`CALL_CHANNEL` code path). It is in the repo and tested with the simulator; it needs a real Indian number to go live.
 

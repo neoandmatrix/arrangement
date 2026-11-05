@@ -81,7 +81,7 @@ class ActivityTimeline extends StatelessWidget {
       if (pending.isNotEmpty) Card(child: ExpansionTile(
         leading: const Icon(Icons.schedule),
         title: Text('Scheduled follow-ups (${pending.length})'),
-        subtitle: const Text('Planned calls · not completed activity'),
+        subtitle: const Text('Automatic follow-ups · venue times are IST'),
         childrenPadding: const EdgeInsets.symmetric(horizontal: 16),
         children: [for (final checkin in pending) FollowupTile(
           key: ValueKey(checkin['id']), checkin: checkin, onCall: onCheckin,

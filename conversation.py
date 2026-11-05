@@ -56,6 +56,8 @@ import store
 import workflow
 import confirmation_rules
 import confirmations
+import checkin_dispatch
+import checkin_policy
 
 # Timbre v3.0 voices speak all 10 languages, so one voice works for every vendor.
 TTS_MODEL = "timbre-v3.0"
@@ -74,6 +76,7 @@ class SessionConfig:
     channel: str  # "phone" | "browser"
     vendor_id: str | None = None
     checkin_id: int | None = None
+    checkin_attempt_id: int | None = None
     confirmation_id: int | None = None
     renegotiate: bool = False  # vendor_call: calling back about their quote, at the family's request
     reconfirm: bool = False  # verification of quote charges, not confirmation of a booking
@@ -94,6 +97,7 @@ class SessionConfig:
             channel=channel,
             vendor_id=data.get("vendor_id") or None,
             checkin_id=int(checkin_id) if checkin_id not in (None, "") else None,
+            checkin_attempt_id=int(data['checkin_attempt_id']) if data.get('checkin_attempt_id') not in (None, '') else None,
             confirmation_id=int(data['confirmation_id']) if data.get('confirmation_id') not in (None, '') else None,
             renegotiate=str(data.get("renegotiate", "")).lower() in ("1", "true"),
             reconfirm=str(data.get("reconfirm", "")).lower() in ("1", "true"),
@@ -117,6 +121,7 @@ END_CALL = FunctionSchema(
             "type": "boolean",
             "description": "True only if they are busy and asked to be called back later.",
         },
+        'callback_at': {'type': ['string', 'null'], 'description': 'For a check-in callback, the vendor-requested venue-local ISO date/time. Null if they did not give a time.'},
     },
     required=["reason", "callback_requested"],
 )
@@ -292,7 +297,17 @@ def _plan(cfg: SessionConfig) -> tuple[str, list[FunctionSchema], str, int | Non
         return prompt, [RECORD_QUOTE, END_CALL], vendor["language"], event_id
 
     checkin = store.checkin(cfg.checkin_id)
+    if cfg.event_id not in (None, checkin['event_id']) or cfg.vendor_id not in (None, checkin['vendor_id']):
+        raise ValueError('Wrong function or vendor for this check-in')
+    cfg.event_id = event_id = checkin['event_id']
+    _, brief = store.event(event_id)
     cfg.vendor_id = checkin["vendor_id"]
+    if cfg.checkin_attempt_id is None:
+        # Local browser/CLI testing uses the same durable claim as automatic calls.
+        cfg.checkin_attempt_id = checkin_dispatch.enqueue(checkin['id'], manual=True, origin='browser')
+        if not store.claim_checkin_attempt(cfg.checkin_attempt_id, checkin_policy.now().isoformat(timespec='seconds')):
+            raise ValueError('Another caller already claimed this check-in')
+    checkin_dispatch.bind(cfg.checkin_attempt_id, cfg.checkin_id, cfg.call_id, cfg.vendor_id, cfg.event_id)
     vendor = store.vendor(checkin["vendor_id"])
     quote = store.latest_quotes(event_id).get(vendor["id"])
     prompt = prompts.checkin_prompt(vendor=vendor, brief=brief, label=checkin["label"], quote=quote)
@@ -300,6 +315,19 @@ def _plan(cfg: SessionConfig) -> tuple[str, list[FunctionSchema], str, int | Non
 
 
 async def run_conversation(
+    transport: BaseTransport, cfg: SessionConfig, *, sample_rate_in: int, sample_rate_out: int
+) -> None:
+    try:
+        await _run_conversation(transport, cfg, sample_rate_in=sample_rate_in, sample_rate_out=sample_rate_out)
+    finally:
+        if cfg.mode == 'checkin' and cfg.checkin_attempt_id:
+            try:
+                checkin_dispatch.fail(cfg.checkin_attempt_id, 'Voice call ended without a saved check-in result')
+            except LookupError:
+                pass
+
+
+async def _run_conversation(
     transport: BaseTransport, cfg: SessionConfig, *, sample_rate_in: int, sample_rate_out: int
 ) -> None:
     """Run one conversation until hang-up, then save the call record."""
@@ -519,6 +547,17 @@ async def run_conversation(
             )
             return
         outcome["end_reason"] = fn.arguments.get("reason", "")
+        if cfg.mode == 'checkin' and fn.arguments.get('callback_requested'):
+            callback_at = None
+            if fn.arguments.get('callback_at'):
+                try:
+                    callback_at = checkin_policy.venue_time(fn.arguments['callback_at'])
+                    if callback_at <= checkin_policy.now():
+                        raise ValueError('Callback time is in the past')
+                except (ValueError, TypeError):
+                    await reject(fn, ['a future callback date/time in venue time (IST)'])
+                    return
+            checkin_dispatch.fail(cfg.checkin_attempt_id, outcome['end_reason'] or 'Vendor requested a callback', status='callback', callback_at=callback_at)
         if cfg.mode == 'confirmation' and fn.arguments.get('callback_requested'):
             confirmations.finish(cfg.confirmation_id, 'callback', outcome['end_reason'] or 'Vendor requested a callback', call_id=cfg.call_id)
         log.info(f"end_call: {outcome['end_reason']}")
@@ -655,11 +694,25 @@ async def run_conversation(
     async def record_checkin(fn: FunctionCallParams) -> None:
         if await answer_pending(fn):
             return
+        if not other_side_has_spoken():
+            await reject(fn, ['The vendor must speak before a check-in can be recorded'])
+            return
         args = fn.arguments
+        if args.get('status') == 'confirmed':
+            last = next(m for m in reversed(context.get_messages()) if _is_spoken_turn(m) and m['role'] == 'user')
+            if not confirmation_rules.agreed(_text(last)):
+                await reject(fn, ['Read back the check-in result and arrival time, then obtain a clear spoken yes before recording confirmed'])
+                return
         if args.get("status") == "delayed" and not _valid_time(args.get("eta")):
             await reject(fn, ["the arrival time (ETA) as HH:MM"])
             return
-        risk = workflow.record_checkin(cfg.checkin_id, args["status"], args.get("eta"), args.get("notes"))
+        try:
+            risk = workflow.record_checkin(cfg.checkin_id, args['status'], args.get('eta'), args.get('notes'), attempt_id=cfg.checkin_attempt_id, call_id=cfg.call_id)
+        except (KeyError, LookupError, ValueError) as error:
+            await fn.result_callback({'ok': False, 'error': str(error)}, properties=FunctionCallResultProperties(run_llm=False))
+            outcome['end_reason'] = 'Check-in attempt no longer current or result invalid'
+            await fn.llm.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
+            return
         mark_recorded("record_checkin")
         log.info(f"record_checkin {cfg.checkin_id}: {args} -> risk {risk}")
         # The vendor isn't told about a switch to the backup; that's for the family.

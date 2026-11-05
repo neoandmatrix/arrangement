@@ -107,13 +107,11 @@ async def renegotiate(event_id: int, brief: dict[str, Any], vendor_id: str) -> s
 
 
 async def checkin_call(event_id: int, brief: dict[str, Any], checkin_id: int) -> str:
-    checkin = store.checkin(checkin_id)
-    session = {"mode": "checkin", "vendor_id": checkin["vendor_id"], "checkin_id": checkin_id, "event_id": event_id}
-    vendor = store.vendor(checkin["vendor_id"])
-    outcome = await channels.call(vendor, session, caller_info(brief, vendor, "checkin"))
-    if outcome["result"] != "answered":
-        workflow.mark_unreachable(checkin_id)
-    return outcome["result"]
+    import checkin_dispatch
+    if store.checkin(checkin_id)['event_id'] != event_id:
+        raise ValueError('Check-in belongs to another function')
+    attempt_id = checkin_dispatch.enqueue(checkin_id, manual=True)
+    return await checkin_dispatch.run_attempt(attempt_id)
 
 
 async def reconfirm(event_id: int, brief: dict[str, Any], vendor_id: str) -> str:

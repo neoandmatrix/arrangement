@@ -15,6 +15,7 @@ import confirmations
 import prompts
 import store
 import workflow
+import checkin_policy
 from confirmation_fixture import finish_confirmation
 from price_fixture import checked_quote
 
@@ -131,3 +132,30 @@ class ConfirmationAPITest(unittest.TestCase):
         self.assertEqual(vendor['confirmation']['purpose'], 'standby')
         self.assertEqual(vendor['booking']['role'], 'backup')
         self.assertEqual({c['vendor_id'] for c in store.checkins(self.event_id)}, {'K01'})
+
+    def test_manual_checkin_uses_one_durable_attempt_and_rejects_duplicate_triggers(self):
+        first = self.approve()
+        finish_confirmation(first)
+        checkin_id = store.checkins(self.event_id)[0]['id']
+        with patch('checkin_dispatch.run_attempt', new_callable=AsyncMock) as run:
+            response = self.client.post(f'/app/checkins/{checkin_id}/call', headers=self.headers())
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(self.client.post(f'/app/checkins/{checkin_id}/call', headers=self.headers()).status_code, 409)
+            self.assertEqual(len(store.checkin_attempts(checkin_id)), 1)
+            run.assert_called_once_with(response.json()['attempt_id'])
+
+    def test_wrong_family_cannot_trigger_a_checkin(self):
+        first = self.approve()
+        finish_confirmation(first)
+        checkin_id = store.checkins(self.event_id)[0]['id']
+        self.assertEqual(self.client.post(f'/app/checkins/{checkin_id}/call', headers=self.headers(self.other_family)).status_code, 403)
+
+    def test_expired_manual_checkin_is_not_forced_into_a_late_call(self):
+        first = self.approve()
+        finish_confirmation(first)
+        checkin = store.checkins(self.event_id)[0]
+        from datetime import timedelta
+        late = checkin_policy.venue_time(checkin['expires_at']) + timedelta(seconds=1)
+        with patch('checkin_policy.now', return_value=late), patch('checkin_dispatch.run_attempt', new_callable=AsyncMock) as run:
+            self.assertEqual(self.client.post(f"/app/checkins/{checkin['id']}/call", headers=self.headers()).status_code, 409)
+            run.assert_not_called()
