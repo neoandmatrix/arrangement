@@ -111,3 +111,23 @@ class ConfirmationAPITest(unittest.TestCase):
         second = self.client.post('/app/events/current/vendors/K03/approve', headers=self.headers()).json()['confirmation_id']
         finish_confirmation(second)
         self.assertEqual(self.client.post('/app/events/current/bookings/cake/cancel', headers=self.headers()).status_code, 400)
+
+    def test_backup_confirmation_is_family_scoped_and_requires_the_selected_vendor(self):
+        first = self.approve()
+        finish_confirmation(first)
+        self.assertEqual(self.client.post('/app/events/current/vendors/K03/confirm-backup', headers=self.headers(self.other_family)).status_code, 403)
+        self.assertEqual(self.client.post('/app/events/current/vendors/K01/confirm-backup', headers=self.headers()).status_code, 400)
+        self.assertEqual(self.client.post('/app/events/current/vendors/K03/confirm-backup', headers=self.headers()).status_code, 200)
+
+    def test_backup_summary_is_standby_not_an_active_booking(self):
+        first = self.approve()
+        finish_confirmation(first)
+        backup_id = store.latest_confirmation(self.event_id, 'cake', 'backup')['id']
+        finish_confirmation(backup_id)
+        family = self.client.get('/app/events/current', headers=self.headers()).json()
+        service = next(s for s in family['services'] if s['category'] == 'cake')
+        vendor = self.client.get('/app/vendor/K03/jobs', headers=self.headers('K03')).json()
+        self.assertTrue(service['booking']['backup']['secured'])
+        self.assertEqual(vendor['confirmation']['purpose'], 'standby')
+        self.assertEqual(vendor['booking']['role'], 'backup')
+        self.assertEqual({c['vendor_id'] for c in store.checkins(self.event_id)}, {'K01'})

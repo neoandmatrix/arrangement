@@ -82,6 +82,8 @@ class _CallScreenState extends State<CallScreen> {
       setState(() => _notice = 'Update sent to the family. Price changes still need their approval.');
     } else if (message['type'] == 'booking_confirmed') {
       setState(() => _notice = 'Booking confirmed. The agreed terms are saved for both sides.');
+    } else if (message['type'] == 'standby_confirmed') {
+      setState(() => _notice = 'Standby availability confirmed. You are not booked and no advance is due now.');
     } else if (message['type'] == 'booking_pending_review') {
       setState(() => _notice = 'Changed terms need family review. The booking is not confirmed.');
     } else if (message['type'] == 'booking_declined') {

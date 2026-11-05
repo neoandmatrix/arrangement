@@ -82,7 +82,7 @@ class _FunctionScreenState extends State<FunctionScreen> {
   Future<void> _cancelSelection(String category) async {
     final approved = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
       title: const Text('Cancel this selection?'),
-      content: const Text('This vendor has not confirmed the booking. You can choose another quote afterwards.'),
+      content: const Text('This stops the unconfirmed selection or replacement request. You can choose another quote afterwards.'),
       actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep selection')),
         FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Cancel selection'))],
     ));
@@ -97,6 +97,16 @@ class _FunctionScreenState extends State<FunctionScreen> {
 
   void _snack(String text) {
     if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<void> _chooseBackup(String category, String vendorId) async {
+    try {
+      await Api.post('/events/current/services/$category/backup/$vendorId');
+      _snack('Backup selected; Bandobast will confirm availability or request activation approval');
+      await _load();
+    } catch (error) {
+      _snack('$error');
+    }
   }
 
   void _newFunction() => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NewFunctionScreen()));
@@ -124,7 +134,7 @@ class _FunctionScreenState extends State<FunctionScreen> {
           : event == null
               ? _empty(context)
               : FamilyDashboard(state: _state!, familyId: Settings.familyId, error: _error,
-                  busy: _busy, onRefresh: _load, onAct: _act, onCheckin: _checkin, onCancel: _cancelSelection),
+                  busy: _busy, onRefresh: _load, onAct: _act, onCheckin: _checkin, onCancel: _cancelSelection, onChooseBackup: _chooseBackup),
     );
   }
 

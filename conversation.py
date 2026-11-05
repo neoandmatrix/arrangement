@@ -397,9 +397,11 @@ async def run_conversation(
         if complete:
             confirmation_state['controlled'] = False
             mark_recorded('record_confirmation')
-            context.add_message({'role': 'system', 'content': 'Code confirmed every approved booking term. Tell the vendor the booking is confirmed, say goodbye and end_call. If the vendor now changes or withdraws terms, record changed or declined instead; do not ignore a last-minute revision.'})
+            message = ('Code confirmed standby availability only. The vendor is NOT booked and no advance is due now. Say this clearly, thank them and end_call.'
+                if booking_record['purpose'] == 'standby' else 'Code confirmed every approved booking term. Tell the vendor the replacement booking is confirmed.' if booking_record['purpose'] == 'replacement' else 'Code confirmed every approved booking term. Tell the vendor the booking is confirmed.')
+            context.add_message({'role': 'system', 'content': message + ' Say goodbye and end_call. If the vendor now changes or withdraws terms, record changed or declined instead; do not ignore a last-minute revision.'})
             if cfg.on_result:
-                await cfg.on_result({'type': 'booking_confirmed', 'confirmation_id': cfg.confirmation_id})
+                await cfg.on_result({'type': 'standby_confirmed' if booking_record['purpose'] == 'standby' else 'booking_confirmed', 'confirmation_id': cfg.confirmation_id})
             if run_llm_when_complete:
                 await task.queue_frames([LLMRunFrame()])
         else:
@@ -418,7 +420,7 @@ async def run_conversation(
         try:
             if status in ('repeat', 'ai_disclosure'):
                 record = store.confirmation(cfg.confirmation_id)
-                latest = store.latest_confirmation(event_id, record['category'])
+                latest = store.latest_confirmation(event_id, record['category'], record['role'])
                 if not latest or latest['id'] != cfg.confirmation_id:
                     raise ValueError('The booking confirmation was superseded')
                 if status == 'ai_disclosure':
@@ -426,7 +428,7 @@ async def run_conversation(
                     context.add_message({'role': 'assistant', 'content': text})
                     await task.queue_frames([TTSSpeakFrame(text, append_to_context=False)])
                 if record['status'] == 'confirmed':
-                    await fn.result_callback({'ok': True, 'next': 'The booking was already confirmed; answer honestly and end_call.'})
+                    await fn.result_callback({'ok': True, 'next': 'Standby availability was agreed, not a booking; answer honestly and end_call.' if record['purpose'] == 'standby' else 'The booking was already confirmed; answer honestly and end_call.'})
                     return
                 if record['status'] != 'calling':
                     await fn.result_callback({'ok': False, 'next': 'This booking is not confirmed. Continue collecting the revised quote if needed, otherwise say goodbye. Do not read back or confirm superseded terms.'})
@@ -439,7 +441,7 @@ async def run_conversation(
             if status == 'agreed':
                 complete = await advance_confirmation()
                 if complete:
-                    await fn.result_callback({'ok': True, 'next': 'All approved terms were confirmed. Tell them the booking is confirmed, say goodbye and end_call.'})
+                    await fn.result_callback({'ok': True, 'next': 'Standby terms are agreed, but they are NOT booked and no advance is due now. Thank them and end_call.' if booking_record['purpose'] == 'standby' else 'All approved terms were confirmed. Tell them the booking is confirmed, say goodbye and end_call.'})
                 else:
                     await fn.result_callback({'ok': True, 'next': 'Wait for their answer to the next approved question, then record_confirmation.'}, properties=FunctionCallResultProperties(run_llm=False))
                 return
@@ -474,7 +476,7 @@ async def run_conversation(
                 await cfg.on_result({'type': 'booking_declined'})
             await fn.result_callback({'ok': True, 'next': 'No booking is confirmed. Say goodbye and end_call.'})
         except (ValueError, LookupError) as error:
-            latest = store.latest_confirmation(event_id, store.vendor(cfg.vendor_id)['category'])
+            latest = store.latest_confirmation(event_id, store.vendor(cfg.vendor_id)['category'], store.confirmation(cfg.confirmation_id)['role'])
             if not latest or latest['id'] != cfg.confirmation_id or store.confirmation(cfg.confirmation_id)['status'] != 'calling':
                 confirmation_state['controlled'] = False
                 outcome['end_reason'] = 'Booking confirmation was superseded or changed'
@@ -800,6 +802,9 @@ async def run_conversation(
         log.info("Call saved")
         if booking_record:
             confirmations.finish(cfg.confirmation_id, 'failed', outcome.get('last_error') or outcome.get('end_reason') or 'Call ended without confirmation', call_id=cfg.call_id)
+        if event_id:
+            import enquiries
+            enquiries.queue_pending_confirmations(event_id)
 
 
 class ConfirmationSpeechTracker(FrameProcessor):

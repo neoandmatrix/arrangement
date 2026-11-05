@@ -116,7 +116,12 @@ CREATE TABLE IF NOT EXISTS booking_confirmations (
     call_id TEXT,
     reason TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'primary',
+    purpose TEXT NOT NULL DEFAULT 'booking',
+    parent_confirmation_id INTEGER,
+    parent_vendor_id TEXT,
+    family_approved INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -129,6 +134,11 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(booking_confirmations)')}
+    for name, definition in {'role': "TEXT NOT NULL DEFAULT 'primary'", 'purpose': "TEXT NOT NULL DEFAULT 'booking'",
+            'parent_confirmation_id': 'INTEGER', 'parent_vendor_id': 'TEXT', 'family_approved': 'INTEGER NOT NULL DEFAULT 0'}.items():
+        if name not in columns:
+            conn.execute(f'ALTER TABLE booking_confirmations ADD COLUMN {name} {definition}')
     return conn
 
 
@@ -303,7 +313,11 @@ def bookings(event_id: int) -> list[dict[str, Any]]:
 
 
 def _confirmation(row) -> dict[str, Any] | None:
-    return {**dict(row), **{key: json.loads(row[key]) for key in ("terms", "approved_quote", "answers")}} if row else None
+    if not row:
+        return None
+    result = {**dict(row), **{key: json.loads(row[key]) for key in ('terms', 'approved_quote', 'answers')}}
+    result['terms'].setdefault('purpose', result['purpose'])  # old primary approvals remain valid after migration
+    return result
 
 
 def confirmation(confirmation_id: int) -> dict[str, Any]:
@@ -314,9 +328,9 @@ def confirmation(confirmation_id: int) -> dict[str, Any]:
     return _confirmation(row)
 
 
-def latest_confirmation(event_id: int, category: str) -> dict[str, Any] | None:
+def latest_confirmation(event_id: int, category: str, role: str = 'primary') -> dict[str, Any] | None:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM booking_confirmations WHERE event_id = ? AND category = ? ORDER BY id DESC LIMIT 1", (event_id, category)).fetchone()
+        row = conn.execute("SELECT * FROM booking_confirmations WHERE event_id = ? AND category = ? AND role = ? ORDER BY id DESC LIMIT 1", (event_id, category, role)).fetchone()
     return _confirmation(row)
 
 
@@ -326,13 +340,16 @@ def confirmations(event_id: int) -> list[dict[str, Any]]:
     return [_confirmation(row) for row in rows]
 
 
-def add_confirmation(event_id: int, category: str, vendor_id: str, terms: dict, quote: dict) -> int:
+def add_confirmation(event_id: int, category: str, vendor_id: str, terms: dict, quote: dict, *, role: str = 'primary',
+                     purpose: str = 'booking', parent_confirmation_id: int | None = None, parent_vendor_id: str | None = None,
+                     family_approved: bool = False) -> int:
     with connect() as conn:
-        conn.execute("UPDATE booking_confirmations SET status = 'superseded', updated_at = ? WHERE event_id = ? AND category = ? AND status IN ('pending', 'calling', 'changed')", (now(), event_id, category))
+        conn.execute("UPDATE booking_confirmations SET status = 'superseded', updated_at = ? WHERE event_id = ? AND category = ? AND role = ? AND status IN ('pending', 'calling', 'changed')", (now(), event_id, category, role))
         cur = conn.execute("""INSERT INTO booking_confirmations
-            (event_id, category, vendor_id, status, terms, approved_quote, answers, created_at, updated_at)
-            VALUES (?, ?, ?, 'pending', ?, ?, '[]', ?, ?)""",
-            (event_id, category, vendor_id, json.dumps(terms, ensure_ascii=False), json.dumps(quote, ensure_ascii=False), now(), now()))
+            (event_id, category, vendor_id, status, terms, approved_quote, answers, created_at, updated_at, role, purpose, parent_confirmation_id, parent_vendor_id, family_approved)
+            VALUES (?, ?, ?, 'pending', ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)""",
+            (event_id, category, vendor_id, json.dumps(terms, ensure_ascii=False), json.dumps(quote, ensure_ascii=False), now(), now(),
+             role, purpose, parent_confirmation_id, parent_vendor_id, int(family_approved)))
         return cur.lastrowid
 
 
@@ -368,11 +385,38 @@ def complete_confirmation(confirmation_id: int, call_id: str, answer_count: int,
         row = conn.execute("SELECT * FROM booking_confirmations WHERE id = ? AND call_id = ? AND status = 'calling'", (confirmation_id, call_id)).fetchone()
         if not row or len(json.loads(row['answers'])) != answer_count:
             return False
-        latest = conn.execute('SELECT MAX(id) AS id FROM booking_confirmations WHERE event_id = ? AND category = ?', (row['event_id'], row['category'])).fetchone()
+        latest = conn.execute('SELECT MAX(id) AS id FROM booking_confirmations WHERE event_id = ? AND category = ? AND role = ?', (row['event_id'], row['category'], row['role'])).fetchone()
         primary = conn.execute("SELECT vendor_id, status FROM bookings WHERE event_id = ? AND category = ? AND role = 'primary'", (row['event_id'], row['category'])).fetchone()
-        if latest['id'] != confirmation_id or not primary or primary['vendor_id'] != row['vendor_id'] or primary['status'] != 'confirming':
+        if latest['id'] != confirmation_id or not primary:
             return False
+        if row['role'] == 'primary':
+            if primary['vendor_id'] != row['vendor_id'] or primary['status'] != 'confirming':
+                return False
+        else:
+            backup = conn.execute("SELECT vendor_id, status FROM bookings WHERE event_id = ? AND category = ? AND role = 'backup'", (row['event_id'], row['category'])).fetchone()
+            parent = conn.execute("SELECT id, status FROM booking_confirmations WHERE event_id = ? AND category = ? AND role = 'primary' ORDER BY id DESC LIMIT 1", (row['event_id'], row['category'])).fetchone()
+            if not backup or backup['vendor_id'] != row['vendor_id'] or primary['vendor_id'] != row['parent_vendor_id'] or not parent or parent['id'] != row['parent_confirmation_id']:
+                return False
+            if row['purpose'] == 'standby':
+                if backup['status'] != 'confirming_backup' or primary['status'] != 'active' or parent['status'] != 'confirmed':
+                    return False
+            elif row['purpose'] == 'replacement':
+                if backup['status'] != 'activating_backup' or primary['status'] != 'replacement_pending' or not row['family_approved']:
+                    return False
+            else:
+                return False
         conn.execute("UPDATE booking_confirmations SET status = 'confirmed', updated_at = ? WHERE id = ?", (now(), confirmation_id))
+        if row['purpose'] == 'standby':
+            conn.execute("UPDATE bookings SET status = 'standby' WHERE event_id = ? AND category = ? AND role = 'backup'", (row['event_id'], row['category']))
+            conn.execute("UPDATE enquiries SET status = 'standby_confirmed', updated_at = ? WHERE event_id = ? AND vendor_id = ?", (now(), row['event_id'], row['vendor_id']))
+            conn.execute('INSERT INTO alerts (event_id, created_at, level, message) VALUES (?, ?, ?, ?)', (row['event_id'], now(), 'info', message))
+            return True
+        if row['role'] == 'backup':
+            conn.execute("UPDATE booking_confirmations SET status = 'superseded', updated_at = ? WHERE event_id = ? AND category = ? AND role = 'primary' AND status IN ('pending','calling','changed')", (now(), row['event_id'], row['category']))
+            conn.execute("UPDATE booking_confirmations SET role = 'primary' WHERE id = ?", (confirmation_id,))
+            conn.execute("UPDATE bookings SET vendor_id = ?, status = 'active', created_at = ? WHERE event_id = ? AND category = ? AND role = 'primary'", (row['vendor_id'], now(), row['event_id'], row['category']))
+            conn.execute("UPDATE bookings SET vendor_id = ?, status = 'replaced' WHERE event_id = ? AND category = ? AND role = 'backup'", (row['parent_vendor_id'], row['event_id'], row['category']))
+            conn.execute("UPDATE enquiries SET status = 'replaced', updated_at = ? WHERE event_id = ? AND vendor_id = ?", (now(), row['event_id'], row['parent_vendor_id']))
         conn.execute("UPDATE bookings SET status = 'active' WHERE event_id = ? AND category = ? AND role = 'primary'", (row['event_id'], row['category']))
         conn.execute("UPDATE enquiries SET status = 'confirmed', updated_at = ? WHERE event_id = ? AND vendor_id = ?", (now(), row['event_id'], row['vendor_id']))
         conn.execute("DELETE FROM checkins WHERE event_id = ? AND category = ? AND status = 'pending'", (row['event_id'], row['category']))

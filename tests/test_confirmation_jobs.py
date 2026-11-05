@@ -64,3 +64,22 @@ class ConfirmationJobsTest(unittest.IsolatedAsyncioTestCase):
         with patch('channels.call', new_callable=AsyncMock, side_effect=RuntimeError('synthetic failure')):
             self.assertEqual(await enquiries.confirmation_call(self.confirmation_id), 'failed')
         self.assertNotEqual(confirmations.request(self.event_id, 'cake'), self.confirmation_id)
+
+    async def test_successful_primary_call_automatically_queues_standby_confirmation(self):
+        from confirmation_fixture import finish_confirmation
+        standby_done = asyncio.Event()
+        store.save_quote(self.event_id, 'K03', None, checked_quote({'available': True, 'price_amount': 2200,
+            'price_unit': 'total', 'transport_charge': 0, 'advance_amount': 400}, 'cake'))
+        store.set_booking(self.event_id, 'cake', 'backup', 'K03', 'awaiting_backup_confirmation')
+
+        async def fake_call(vendor, session, caller):
+            finish_confirmation(session['confirmation_id'])
+            if caller['purpose'] == 'standby_confirmation':
+                standby_done.set()
+            return {'result': 'answered', 'call_id': f"synthetic-confirmation-{session['confirmation_id']}"}
+
+        with patch('channels.call', new_callable=AsyncMock, side_effect=fake_call):
+            await enquiries.confirmation_call(self.confirmation_id)
+            await asyncio.wait_for(standby_done.wait(), 2)
+        self.assertEqual(confirmations.summary(self.event_id, 'cake', 'backup')['purpose'], 'standby')
+        self.assertEqual(confirmations.primary(self.event_id, 'cake')['vendor_id'], 'K01')

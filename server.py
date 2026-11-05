@@ -139,7 +139,9 @@ async def book(category: str):
 @app.post("/api/checkins/{checkin_id}/unreachable", dependencies=[Depends(local_only)])
 async def checkin_unreachable(checkin_id: int):
     try:
-        return {"risk": workflow.mark_unreachable(checkin_id)}
+        risk = workflow.mark_unreachable(checkin_id)
+        enquiries.queue_pending_confirmations(store.checkin(checkin_id)['event_id'])
+        return {'risk': risk}
     except (LookupError, KeyError) as e:
         raise HTTPException(400, str(e))
 

@@ -11,7 +11,7 @@ import store
 import workflow
 from conversation import SessionConfig, _plan, brief_problems
 from price_fixture import checked_quote
-from confirmation_fixture import book_confirmed
+from confirmation_fixture import book_confirmed, finish_replacement
 
 
 class VendorUpdatesTest(unittest.TestCase):
@@ -78,6 +78,8 @@ class VendorUpdatesTest(unittest.TestCase):
 
     def test_cancellation_switches_backup_and_disables_cancelled_quote(self):
         workflow.record_vendor_update(self.event_id, "K01", {"kind": "cancelled", "notes": "Cannot deliver"}, "Cannot deliver")
+        self.assertNotEqual(next(b for b in store.bookings(self.event_id) if b['role'] == 'primary')['status'], 'active')
+        finish_replacement(self.event_id, 'cake')
         primary = next(b for b in store.bookings(self.event_id) if b["role"] == "primary")
         self.assertEqual(primary["vendor_id"], "K03")
         self.assertEqual(store.enquiry(self.event_id, "K01")["status"], "replaced")
@@ -85,6 +87,7 @@ class VendorUpdatesTest(unittest.TestCase):
 
     def test_late_eta_uses_category_deadline(self):
         workflow.record_vendor_update(self.event_id, "K01", {"kind": "delayed", "eta": "23:00", "notes": "Running late"}, "I will arrive at 23:00")
+        finish_replacement(self.event_id, 'cake')
         self.assertEqual(next(b for b in store.bookings(self.event_id) if b["role"] == "primary")["vendor_id"], "K03")
 
     def test_invalid_eta_and_nonpositive_prices_are_rejected(self):
@@ -131,7 +134,7 @@ class VendorUpdatesTest(unittest.TestCase):
         store.set_booking(self.event_id, "cake", "backup", "K03", "cancelled")
         workflow.record_vendor_update(self.event_id, "K01", {"kind": "cancelled", "notes": "Cannot deliver"}, "Cannot deliver")
         primary = next(b for b in store.bookings(self.event_id) if b["role"] == "primary")
-        self.assertEqual(primary["status"], "cancelled")
+        self.assertEqual(primary["status"], "needs_replacement")
         self.assertEqual(workflow.book("cake", "K03")["primary"], "K03")
 
     def test_pending_revision_cannot_be_booked_at_the_old_rate(self):

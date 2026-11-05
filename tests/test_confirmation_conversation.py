@@ -69,7 +69,7 @@ class ConfirmationConversationTest(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def run_voice(self, script):
-        holder = {}
+        holder = {'notices': []}
         results = []
         llm = LLM()
         tts = TTS()
@@ -130,8 +130,11 @@ class ConfirmationConversationTest(unittest.IsolatedAsyncioTestCase):
                 await script(holder, tool, say, deliver, results, llm)
 
         transport = SimpleNamespace(input=lambda: Processor(), output=lambda: Processor(), event_handler=lambda name: lambda callback: callback)
-        cfg = conversation.SessionConfig(mode='confirmation', channel='app', vendor_id='P01', event_id=self.event_id,
+        async def notice(data):
+            holder['notices'].append(data)
+        cfg = conversation.SessionConfig(mode='confirmation', channel='app', vendor_id=store.confirmation(self.confirmation_id)['vendor_id'], event_id=self.event_id,
                                          confirmation_id=self.confirmation_id, call_id='synthetic-confirmation-call')
+        cfg.on_result = notice
         with patch.dict('os.environ', {'GNANI_API_KEY': 'synthetic-test-key'}), \
              patch('conversation.GnaniSTTService', return_value=Processor()), \
              patch('conversation.GnaniTTSService', return_value=tts) as tts_type, \
@@ -221,3 +224,26 @@ class ConfirmationConversationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.latest_quotes(self.event_id)['P01']['price_amount'], 11000)
         self.assertEqual(confirmations.primary(self.event_id, 'priest')['status'], 'awaiting_changes')
         self.assertEqual(store.updates(self.event_id)[0]['status'], 'pending')
+
+    async def test_standby_voice_flow_never_emits_booking_confirmed(self):
+        import backups
+        from confirmation_fixture import finish_confirmation
+        finish_confirmation(self.confirmation_id)
+        store.save_quote(self.event_id, 'P02', None, self.quote)
+        store.set_booking(self.event_id, 'priest', 'backup', 'P02', 'awaiting_backup_confirmation')
+        self.confirmation_id = backups.request_standby(self.event_id, 'priest')
+        confirmations.claim(self.confirmation_id)
+        async def script(holder, tool, say, deliver, results, llm):
+            say('yes')
+            await tool('start_confirmation')
+            questions = confirmation_rules.questions(store.confirmation(self.confirmation_id)['terms'], store.vendor('P02')['language'])
+            for question in questions:
+                self.assertEqual(await deliver(), question['text'])
+                say('yes')
+                await tool('record_confirmation', status='agreed')
+            self.assertEqual(holder['notices'][-1]['type'], 'standby_confirmed')
+            self.assertFalse(any(n['type'] == 'booking_confirmed' for n in holder['notices']))
+            self.assertIn('NOT booked', results[-1]['next'])
+        await self.run_voice(script)
+        self.assertEqual(confirmations.primary(self.event_id, 'priest')['vendor_id'], 'P01')
+        self.assertEqual({c['vendor_id'] for c in store.checkins(self.event_id)}, {'P01'})

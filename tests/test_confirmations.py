@@ -106,14 +106,15 @@ class BookingConfirmationTest(unittest.TestCase):
         self.assertEqual(store.latest_quotes(self.event_id)['K01']['available'], True)
         self.assertEqual(store.checkins(self.event_id), [])
 
-    def test_a_spoken_refusal_releases_the_selection_without_activating_backup(self):
+    def test_a_spoken_refusal_requests_replacement_confirmation_without_activating_it(self):
         self.begin()
         confirmations.finish(self.confirmation_id, 'declined', 'Cannot accept this booking', call_id='synthetic-call')
-        self.assertEqual(confirmations.primary(self.event_id, 'cake')['status'], 'declined')
+        self.assertEqual(confirmations.primary(self.event_id, 'cake')['status'], 'replacement_pending')
         backup = next(b for b in store.bookings(self.event_id) if b['role'] == 'backup')
-        self.assertEqual(backup['status'], 'standby')
+        self.assertEqual(backup['status'], 'awaiting_activation')
         self.assertFalse(store.latest_quotes(self.event_id)['K01']['available'])
-        self.assertEqual(workflow.book('cake', 'K03')['primary'], 'K03')
+        finish_confirmation(store.latest_confirmation(self.event_id, 'cake', 'backup')['id'])
+        self.assertEqual(confirmations.primary(self.event_id, 'cake')['vendor_id'], 'K03')
         self.assertFalse(any(b['role'] == 'backup' and b['status'] == 'standby' and b['vendor_id'] == 'K03' for b in store.bookings(self.event_id)))
 
     def test_callback_remains_unconfirmed_and_can_be_retried(self):

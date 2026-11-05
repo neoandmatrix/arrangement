@@ -22,3 +22,12 @@ def book_confirmed(category, vendor_id=None):
     result = workflow.book(category, vendor_id)
     finish_confirmation(result['confirmation_id'])
     return result
+
+
+def finish_replacement(event_id, category):
+    update = next((u for u in store.updates(event_id) if u['kind'] == 'backup_activation' and u['status'] == 'pending'), None)
+    if update:
+        confirmation_id = workflow.decide_update(event_id, update['id'], True)['confirmation_id']
+    else:
+        confirmation_id = store.latest_confirmation(event_id, category, 'backup')['id']
+    finish_confirmation(confirmation_id)

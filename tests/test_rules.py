@@ -9,7 +9,7 @@ import rules
 import store
 import workflow
 from price_fixture import checked_quote
-from confirmation_fixture import book_confirmed
+from confirmation_fixture import book_confirmed, finish_replacement
 
 BRIEF = prompts.SAMPLE_BRIEF  # 40 guests, muhurat 2026-11-15 07:30
 
@@ -164,13 +164,15 @@ class WorkflowTest(unittest.TestCase):
         first = next(c for c in store.checkins(self.event_id) if c["vendor_id"] == "C02")
         risk = workflow.record_checkin(first["id"], "cancelled", None, "Another booking came up")
         self.assertEqual(risk["action"], "activate_backup")
+        self.assertFalse(any(b['role'] == 'primary' and b['status'] == 'active' for b in store.bookings(self.event_id)))
+        finish_replacement(self.event_id, 'caterer')
 
         roles = {b["role"]: b for b in store.bookings(self.event_id)}
         self.assertEqual((roles["primary"]["vendor_id"], roles["primary"]["status"]), ("C06", "active"))
         self.assertEqual(roles["backup"]["status"], "replaced")
         pending = {c["vendor_id"] for c in store.checkins(self.event_id) if c["status"] == "pending"}
         self.assertEqual(pending, {"C06"})
-        self.assertEqual(store.alerts(self.event_id)[0]["level"], "critical")
+        self.assertIn('replacement booking', store.alerts(self.event_id)[0]['message'])
 
 
 if __name__ == "__main__":

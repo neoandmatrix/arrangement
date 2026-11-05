@@ -68,7 +68,22 @@ retains approval and exposes a retry rather than claiming success or silently re
 Changed prices or service coverage need family approval and a new complete confirmation call.
 Date/time/venue changes are shown for family review, not applied to one vendor independently
 of the function. The family can reject the change and retry original terms, or cancel the
-unconfirmed selection and choose another vendor. Backup confirmation remains a separate phase.
+unconfirmed selection and choose another vendor.
+
+**Backup confirmation:** a selected runner-up is only a candidate until it agrees to standby
+availability on its quoted terms. After the primary confirms, Bandobast calls the backup. This
+is explicitly not a booking, and no advance is due. Standby failures or quote changes do not
+cancel the primary booking; they remove the claim that a backup is secured and alert the family.
+If the primary fails, it is marked as needing replacement and its pending check-ins are removed.
+Bandobast makes a separate activation call to the backup. Only complete spoken confirmation
+promotes the backup to the active primary and creates its check-ins. Standby agreement alone
+cannot do this. Higher replacement cost or advance, or a cost above budget, requires family
+approval before the activation call. Changed quotes still pass the price safeguards.
+Standby and activation attempts have separate immutable IDs and are bound to the primary
+approval. Old standby replies cannot complete a newer activation or a changed backup selection.
+The family can retry or choose another quoted backup. No-answer, decline, restart or failed
+activation leaves an explicit unconfirmed-replacement warning, not a pretend successful switch.
+Automatic check-in dispatch remains the next phase.
 
 **Vendors without the app** get a normal phone call through Twilio (`CALL_CHANNEL` code path). It is in the repo and tested with the simulator; it needs a real Indian number to go live.
 

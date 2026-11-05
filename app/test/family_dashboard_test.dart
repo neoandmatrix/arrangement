@@ -225,4 +225,42 @@ void main() {
     expect(find.text('Confirmed'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('only secured standby is labelled confirmed and never as booked', (tester) async {
+    final state = fixture();
+    final service = (state['services'] as List).first as Map<String, dynamic>;
+    final terms = Map<String, dynamic>.from(((service['booking'] as Map)['primary']['confirmation'] as Map)['terms'] as Map);
+    terms['purpose'] = 'standby';
+    (service['booking'] as Map)['backup'] = {'vendor_id': 'P02', 'status': 'standby', 'secured': true,
+      'confirmation': {'id': 2, 'status': 'confirmed', 'purpose': 'standby', 'terms': terms}};
+    await tester.pumpWidget(dashboard(state));
+    await tester.ensureVisible(find.text('Backup · Standby confirmed'));
+    await tester.pumpAndSettle();
+    expect(find.text('Backup · Standby confirmed'), findsOneWidget);
+    expect(find.text('Available as standby, not booked. No advance is due unless activated.'), findsOneWidget);
+    expect(find.text('Confirmed standby terms · not booked'), findsOneWidget);
+  });
+
+  testWidgets('legacy standby without confirmation is not shown as secured', (tester) async {
+    final state = fixture();
+    final service = (state['services'] as List).first as Map<String, dynamic>;
+    (service['booking'] as Map)['backup'] = {'vendor_id': 'P02', 'status': 'standby', 'secured': false};
+    await tester.pumpWidget(dashboard(state));
+    expect(find.text('Backup · Standby not confirmed'), findsOneWidget);
+    expect(find.text('Backup · Standby confirmed'), findsNothing);
+  });
+
+  testWidgets('replacement pending does not look like an active confirmed vendor', (tester) async {
+    final state = fixture();
+    final service = (state['services'] as List).first as Map<String, dynamic>;
+    final primary = (service['booking'] as Map)['primary'] as Map;
+    primary['status'] = 'replacement_pending';
+    primary.remove('confirmation');
+    (service['booking'] as Map)['backup'] = {'vendor_id': 'P02', 'status': 'awaiting_activation', 'secured': false};
+    await tester.pumpWidget(dashboard(state));
+    expect(find.text('Replacement needed'), findsOneWidget);
+    expect(find.text('Backup · Confirming replacement'), findsOneWidget);
+    expect(find.text('The replacement is not active until its booking confirmation is complete.'), findsOneWidget);
+    expect(find.text('Confirmed'), findsNothing);
+  });
 }

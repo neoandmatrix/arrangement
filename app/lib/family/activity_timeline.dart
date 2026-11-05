@@ -19,10 +19,10 @@ List<Map<String, dynamic>> timelineEntries({required List<Map<String, dynamic>> 
     final quote = data['quote'] as Map?;
     entries.add({
       'key': 'update-${update['id']}', 'time': update['created_at'], 'reported': true,
-      'title': switch (kind) { 'price' => 'Price revision', 'quote' => 'Quote correction', 'cancelled' => 'Vendor cancelled', 'delayed' => 'Arrival delayed', _ => 'Vendor update' },
-      'detail': '$name\n${kind == 'quote' ? 'Corrected total: ${rupees(data['landed_cost'] as num?)}' : quote != null ? '${quotedMoney(data['previous_price'])} → ${quotedMoney(quote['price_amount'])}${quote['price_unit'] == 'per_plate' ? ' per plate' : ' base price'}' : data['notes']}'
+      'title': switch (kind) { 'price' => 'Price revision', 'quote' => 'Quote correction', 'backup_activation' => 'Replacement needs family approval', 'cancelled' => 'Vendor cancelled', 'delayed' => 'Arrival delayed', _ => 'Vendor update' },
+      'detail': '$name\n${kind == 'backup_activation' ? 'Replacement total: ${quotedMoney(data['landed_cost'])}' : kind == 'quote' ? 'Corrected total: ${rupees(data['landed_cost'] as num?)}' : quote != null ? '${quotedMoney(data['previous_price'])} → ${quotedMoney(quote['price_amount'])}${quote['price_unit'] == 'per_plate' ? ' per plate' : ' base price'}' : data['notes']}'
           '${data['eta'] != null ? '\nArrival: ${data['eta']}' : ''}',
-      'status': kind == 'price' || kind == 'quote' ? '${update['status']}' : null,
+      'status': kind == 'price' || kind == 'quote' || kind == 'backup_activation' ? '${update['status']}' : null,
       'level': update['status'] == 'pending' || kind == 'cancelled' || kind == 'delayed' ? 'warn' : 'info',
       'icon': kind == 'price' ? Icons.receipt_long_outlined : Icons.message_outlined,
     });
@@ -38,6 +38,8 @@ List<Map<String, dynamic>> timelineEntries({required List<Map<String, dynamic>> 
     entries.add({
       'key': 'alert-${alert['id']}', 'time': alert['created_at'],
       'title': approved ? 'Price revision approved' : rejected ? 'Price revision rejected'
+          : message.contains('confirmed standby availability') ? 'Backup standby confirmed · not booked'
+          : message.contains('confirmed the') && message.contains('replacement booking') ? 'Replacement booking confirmed'
           : message.contains('confirmed the') && message.contains('booking') ? 'Booking confirmed'
           : message.contains('vendor booking confirmation is pending') ? 'Vendor approved · confirmation pending'
           : message.contains('Switched to backup') ? 'Backup activated'

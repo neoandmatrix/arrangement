@@ -144,6 +144,8 @@ Future<void> handlePush(Map<String, dynamic> data) async {
 }
 
 const _purpose = {
+  'standby_confirmation': 'Standby availability · not a booking',
+  'backup_activation': 'Confirming a replacement booking',
   'booking_confirmation': 'Confirming your booking',
   'reconfirmation': 'Rechecking your quote prices',
   'direct': 'Direct family–vendor call',

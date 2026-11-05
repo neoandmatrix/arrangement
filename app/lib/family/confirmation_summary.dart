@@ -13,9 +13,10 @@ class ConfirmationSummary extends StatelessWidget {
     final terms = confirmation['terms'] as Map<String, dynamic>;
     final quote = terms['quote'] as Map<String, dynamic>;
     final confirmed = confirmation['status'] == 'confirmed';
+    final standby = confirmation['purpose'] == 'standby';
     return ExpansionTile(
       tilePadding: EdgeInsets.zero,
-      title: Text(confirmed ? 'Confirmed booking summary' : 'Family-approved terms'),
+      title: Text(standby ? confirmed ? 'Confirmed standby terms · not booked' : 'Proposed standby terms' : confirmed ? 'Confirmed booking summary' : 'Family-approved terms'),
       childrenPadding: const EdgeInsets.only(bottom: 12),
       children: [
         _line('Occasion', '${terms['function']}'),
@@ -30,7 +31,8 @@ class ConfirmationSummary extends StatelessWidget {
         _line('Transport', quotedMoney(quote['transport_charge'])),
         _line('Extras', quotedMoney(quote['extra_charges_amount'])),
         _line('Total', quotedMoney(terms['total'])),
-        _line('Advance', quotedMoney(quote['advance_amount'])),
+        _line(standby ? 'Advance if activated' : 'Advance', quotedMoney(quote['advance_amount'])),
+        if (standby) const Align(alignment: Alignment.centerLeft, child: Text('Standby is not a booking. No advance is due now.')),
         if (quote['gst_included'] != null) _line('GST', quote['gst_included'] == true ? 'Included' : 'Not included'),
         for (final key in ['cuisine', 'rituals', 'wishes'])
           if ('${terms[key] ?? ''}'.isNotEmpty) _line(key == 'cuisine' ? 'Food' : key == 'rituals' ? 'Rituals' : 'Wishes', '${terms[key]}'),

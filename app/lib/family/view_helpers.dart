@@ -8,7 +8,7 @@ Map<String, dynamic>? booking(Map<String, dynamic> service, String role) =>
 
 bool isBooked(Map<String, dynamic> service) => booking(service, 'primary')?['status'] == 'active';
 
-const selectedBookingStates = {'active', 'awaiting_confirmation', 'confirming', 'confirmation_failed', 'awaiting_changes'};
+const selectedBookingStates = {'active', 'awaiting_confirmation', 'confirming', 'confirmation_failed', 'awaiting_changes', 'replacement_pending'};
 bool isSelected(Map<String, dynamic> service) => selectedBookingStates.contains(booking(service, 'primary')?['status']);
 
 Map<String, dynamic>? vendorIn(Map<String, dynamic> service, String? id) =>
@@ -56,6 +56,16 @@ const vendorStatuses = {
   'confirmation_failed': ('Confirmation needed', Icons.phone_missed),
   'awaiting_changes': ('Changed terms · review needed', Icons.pending_actions),
   'standby': ('Backup on standby', Icons.shield_outlined),
+  'standby_confirmed': ('Standby confirmed · not booked', Icons.shield_outlined),
+  'awaiting_backup_confirmation': ('Standby not confirmed', Icons.pending_actions),
+  'confirming_backup': ('Confirming standby', Icons.phone_in_talk),
+  'backup_confirmation_failed': ('Backup did not confirm', Icons.phone_missed),
+  'backup_awaiting_changes': ('Backup changes need review', Icons.pending_actions),
+  'awaiting_activation': ('Replacement confirmation queued', Icons.pending_actions),
+  'activating_backup': ('Confirming replacement', Icons.phone_in_talk),
+  'activation_awaiting_approval': ('Replacement needs approval', Icons.pending_actions),
+  'replacement_pending': ('Replacement pending', Icons.swap_horiz),
+  'needs_replacement': ('No confirmed replacement', Icons.warning_amber_outlined),
   'rejected': ('Rejected', Icons.block),
   'replaced': ('Replaced by backup', Icons.swap_horiz),
   'cancelled': ('Cancelled', Icons.event_busy),

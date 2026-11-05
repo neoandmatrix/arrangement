@@ -12,6 +12,7 @@ import price_safety
 import store
 import confirmation_rules
 import confirmations
+import backups
 
 
 def require_event() -> tuple[int, dict[str, Any]]:
@@ -67,13 +68,13 @@ def book(category: str, vendor_id: str | None = None) -> dict[str, Any]:
     if any(b["category"] == category and b["role"] == "primary" and b["status"] in confirmation_rules.RESERVED for b in store.bookings(event_id)):
         raise ValueError(f"A {category} is already booked")
     old_backup = next((b for b in store.bookings(event_id) if b['category'] == category and b['role'] == 'backup'), None)
-    if old_backup and old_backup['status'] == 'standby' and old_backup['vendor_id'] not in (primary, backup_id):
+    if old_backup and old_backup['status'] in confirmation_rules.BACKUP_RESERVED and old_backup['vendor_id'] not in (primary, backup_id):
         store.set_enquiry(event_id, old_backup['vendor_id'], category, 'quoted', note='Backup selection changed')
     store.set_booking(event_id, category, "primary", result["top"], "awaiting_confirmation")
     store.set_enquiry(event_id, primary, category, "awaiting_confirmation")
     if result["backup"]:
-        store.set_booking(event_id, category, "backup", result["backup"], "standby")
-        store.set_enquiry(event_id, backup_id, category, "standby")
+        store.set_booking(event_id, category, "backup", result["backup"], "awaiting_backup_confirmation")
+        store.set_enquiry(event_id, backup_id, category, "awaiting_backup_confirmation")
     elif old_backup:
         store.set_booking(event_id, category, 'backup', old_backup['vendor_id'], 'cancelled')
     primary = store.vendor(result["top"])
@@ -85,7 +86,7 @@ def book(category: str, vendor_id: str | None = None) -> dict[str, Any]:
 def reject(vendor_id: str) -> None:
     """The family doesn't want this vendor: drop them from the comparison."""
     event_id, _ = require_event()
-    if any(b["vendor_id"] == vendor_id and b["status"] in (*confirmation_rules.RESERVED, "standby") for b in store.bookings(event_id)):
+    if any(b["vendor_id"] == vendor_id and b["status"] in (*confirmation_rules.RESERVED, *confirmation_rules.BACKUP_RESERVED) for b in store.bookings(event_id)):
         raise ValueError("That vendor is booked; it can't be rejected now")
     store.set_enquiry(event_id, vendor_id, store.vendor(vendor_id)["category"], "rejected")
 
@@ -121,39 +122,7 @@ def _act_on_risk(
         store.add_alert(event_id, "warn", f"{vendor['name']} ({category}): {risk['reason']}")
         return
 
-    booking = {b["role"]: b for b in store.bookings(event_id) if b["category"] == category}
-    backup = booking.get("backup")
-    if not backup or backup["status"] != "standby":
-        store.add_alert(
-            event_id,
-            "critical",
-            f"{vendor['name']} ({category}): {risk['reason']}. No backup on standby; call the family now.",
-        )
-        return
-
-    backup_quote = store.latest_quotes(event_id).get(backup["vendor_id"])
-    pending = any(u["vendor_id"] == backup["vendor_id"] and u["status"] == "pending" for u in store.updates(event_id))
-    if not backup_quote or pending or any(f["level"] == "block" for f in rules.quote_flags(backup_quote, store.vendor(backup["vendor_id"]), brief)):
-        store.add_alert(event_id, "critical", f"{vendor['name']} ({category}): {risk['reason']}. Backup prices need rechecking; no unsafe backup was activated.")
-        return
-
-    store.set_booking(event_id, category, "primary", backup["vendor_id"], "active")
-    store.set_booking(event_id, category, "backup", vendor_id, "replaced")
-    store.set_enquiry(event_id, vendor_id, category, "replaced")
-    store.set_enquiry(event_id, backup["vendor_id"], category, "approved")
-    remaining = [
-        (label, due)
-        for label, due in rules.checkin_schedule(brief, category)
-        if not label.startswith("D-3")
-    ]
-    store.add_checkins(event_id, backup["vendor_id"], category, remaining)
-    new_vendor = store.vendor(backup["vendor_id"])
-    store.add_alert(
-        event_id,
-        "critical",
-        f"{vendor['name']} ({category}): {risk['reason']}. Switched to backup {new_vendor['name']}; "
-        "Please contact the new vendor to confirm the arrangement.",
-    )
+    backups.begin_replacement(event_id, category, vendor_id, risk['reason'])
 
 
 def mark_unreachable(checkin_id: int) -> dict[str, str] | None:
@@ -221,13 +190,18 @@ def record_vendor_update(event_id: int, vendor_id: str, data: dict[str, Any], ve
             store.save_quote(event_id, vendor_id, None, {**quote, "available": False})
         store.set_enquiry(event_id, vendor_id, vendor["category"], "declined", note=payload["notes"])
         for b in store.bookings(event_id):
-            if b["vendor_id"] == vendor_id and b["role"] == "backup" and b["status"] == "standby":
+            if b["vendor_id"] == vendor_id and b["role"] == "backup" and b["status"] in confirmation_rules.BACKUP_RESERVED:
+                record = store.latest_confirmation(event_id, vendor['category'], 'backup')
+                if record and record['status'] in ('pending', 'calling'):
+                    confirmations.finish(record['id'], 'declined', payload['notes'], call_id=call_id)
                 store.set_booking(event_id, b["category"], "backup", vendor_id, "cancelled")
     return update_id
 
 
 def decide_update(event_id: int, update_id: int, approve: bool) -> dict[str, Any]:
     update = store.update(update_id)
+    if update['kind'] == 'backup_activation':
+        return {'confirmation_id': backups.decide_activation(event_id, update_id, approve)}
     if update["event_id"] != event_id or update["kind"] not in ("price", "quote", "confirmation_change") or update["status"] != "pending":
         raise ValueError("This price revision is no longer pending for this function")
     vendor_id = update["vendor_id"]
@@ -277,7 +251,7 @@ def record_quote(event_id: int, vendor_id: str, call_id: str, quote: dict[str, A
     """Rechecking an already booked quote never silently replaces agreed charges."""
     _, brief = store.event(event_id)
     vendor = store.vendor(vendor_id)
-    committed = any(b["vendor_id"] == vendor_id and b["status"] in (*confirmation_rules.RESERVED, "standby") for b in store.bookings(event_id))
+    committed = any(b["vendor_id"] == vendor_id and b["status"] in (*confirmation_rules.RESERVED, *confirmation_rules.BACKUP_RESERVED) for b in store.bookings(event_id))
     current = store.latest_quotes(event_id).get(vendor_id)
     if committed and quote.get("available") is False:
         update_id = record_vendor_update(event_id, vendor_id, {"kind": "cancelled", "notes": quote.get("notes") or "Vendor is no longer available."}, [], call_id=call_id)

@@ -127,6 +127,14 @@ const _enquiryText = {
   'confirmation_failed': 'Booking confirmation is still needed',
   'awaiting_changes': 'Changed terms are awaiting family review',
   'standby': 'On standby as backup',
+  'standby_confirmed': 'Standby availability confirmed · not booked',
+  'awaiting_backup_confirmation': 'Standby confirmation pending · not booked',
+  'confirming_backup': 'Confirming your standby availability',
+  'backup_confirmation_failed': 'Standby or replacement confirmation is still needed',
+  'backup_awaiting_changes': 'Backup terms are awaiting family review',
+  'awaiting_activation': 'Replacement call queued · not active yet',
+  'activating_backup': 'Confirming a replacement booking',
+  'activation_awaiting_approval': 'Family approval is needed before replacement confirmation',
   'rejected': 'The family chose someone else',
 };
 
@@ -165,13 +173,13 @@ class _JobCard extends StatelessWidget {
             if (quote != null) ...[
               const SizedBox(height: 8),
               Text('Your quote: ${rupees(quote['price_amount'] as num?)}${quote['price_unit'] == 'per_plate' ? ' per plate' : ''}'),
-              if (quote['advance_amount'] != null) Text('Advance: ${rupees(quote['advance_amount'] as num?)}'),
+              if (quote['advance_amount'] != null) Text('${booking?['role'] == 'backup' ? 'Advance if activated' : 'Advance'}: ${rupees(quote['advance_amount'] as num?)}'),
             ],
             if (booking != null) ...[
               const SizedBox(height: 8),
               Chip(label: Text(booking['role'] == 'primary'
                   ? (confirmed ? 'Booking confirmed' : 'Selected · ${booking['status']}')
-                  : 'Backup (${booking['status']})')),
+                  : (booking['status'] == 'replaced' ? 'Replaced by a confirmed backup' : confirmation?['purpose'] == 'standby' && confirmation?['status'] == 'confirmed' ? 'Standby confirmed · not booked' : 'Backup selected · ${booking['status']}'))),
               if (confirmation != null) ConfirmationSummary(confirmation: confirmation),
             ],
             if (enquiry != null) ...[

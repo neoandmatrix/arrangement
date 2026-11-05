@@ -4,9 +4,10 @@ import '../call_actions.dart';
 import 'quote_details.dart';
 import 'view_helpers.dart';
 import 'confirmation_summary.dart';
+import 'backup_panel.dart';
 
 class BookingCard extends StatelessWidget {
-  const BookingCard({super.key, required this.service, required this.checkins, required this.onQuotes, required this.onCheckin, this.onReconfirm, this.onConfirm, this.onCancel, this.rechecking = false, this.reviewPending = false});
+  const BookingCard({super.key, required this.service, required this.checkins, required this.onQuotes, required this.onCheckin, this.onReconfirm, this.onConfirm, this.onCancel, this.onBackupConfirm, this.onBackupChoose, this.onBackupReconfirm, this.rechecking = false, this.reviewPending = false});
   final Map<String, dynamic> service;
   final List<Map<String, dynamic>> checkins;
   final VoidCallback onQuotes;
@@ -16,6 +17,9 @@ class BookingCard extends StatelessWidget {
   final VoidCallback? onConfirm;
   final VoidCallback? onCancel;
   final bool reviewPending;
+  final VoidCallback? onBackupConfirm;
+  final Future<void> Function(String)? onBackupChoose;
+  final VoidCallback? onBackupReconfirm;
 
   @override
   Widget build(BuildContext context) {
@@ -26,9 +30,7 @@ class BookingCard extends StatelessWidget {
     final confirmed = active && confirmation?['status'] == 'confirmed';
     final state = primary?['status'];
     final vendor = vendorIn(service, primary?['vendor_id'] as String?);
-    final backup = booking(service, 'backup');
-    final standby = backup?['status'] == 'standby';
-    final standbyVendor = vendorIn(service, backup?['vendor_id'] as String?);
+    final replacing = {'replacement_pending', 'needs_replacement'}.contains(state);
     final pending = checkins.where((c) => c['vendor_id'] == primary?['vendor_id'] && c['status'] == 'pending').toList()
       ..sort((a, b) => '${a['due_at']}'.compareTo('${b['due_at']}'));
     return Card(
@@ -40,11 +42,16 @@ class BookingCard extends StatelessWidget {
             Icon(serviceIcon(service['category']), color: Theme.of(context).colorScheme.primary),
             const SizedBox(width: 8),
             Expanded(child: Text('${service['name']}', style: Theme.of(context).textTheme.titleMedium)),
-            Flexible(child: Text(confirmed ? 'Confirmed' : active ? 'Booked' : selected ? 'Awaiting confirmation' : state == 'cancelled' ? 'Cancelled' : state == 'declined' ? 'Declined' : 'Not booked',
+            Flexible(child: Text(replacing ? 'Replacement needed' : confirmed ? 'Confirmed' : active ? 'Booked' : selected ? 'Awaiting confirmation' : state == 'cancelled' ? 'Cancelled' : state == 'declined' ? 'Declined' : 'Not booked',
                 textAlign: TextAlign.end, style: TextStyle(fontSize: 12, color: confirmed ? Colors.green.shade800 : Theme.of(context).colorScheme.secondary))),
           ]),
           const SizedBox(height: 12),
-          if (selected) ...[
+          if (replacing) ...[
+            Text('Original vendor: ${vendor?['name'] ?? primary?['vendor_id']}'),
+            const Text('The primary could not fulfil the booking. No replacement is active until its vendor confirms.', style: TextStyle(fontSize: 13)),
+            if (state == 'replacement_pending' && onCancel != null) TextButton(onPressed: onCancel, child: const Text('Cancel replacement request')),
+            if (state == 'needs_replacement') TextButton(onPressed: onQuotes, child: const Text('View other quotes')),
+          ] else if (selected) ...[
             Text('${vendor?['name'] ?? primary?['vendor_id']}', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
             if (vendor != null) QuoteAmount(vendor: vendor),
@@ -59,11 +66,6 @@ class BookingCard extends StatelessWidget {
               FilledButton.tonalIcon(onPressed: rechecking ? null : onConfirm, icon: const Icon(Icons.phone_callback), label: Text(confirmation == null || confirmation['status'] == 'pending' ? 'Confirm booking' : 'Retry confirmation')),
             if (!active && onCancel != null) TextButton(onPressed: rechecking ? null : onCancel, child: const Text('Cancel this selection')),
             const SizedBox(height: 8),
-            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Icon(standby ? Icons.shield_outlined : Icons.info_outline, size: 18, color: Theme.of(context).colorScheme.secondary),
-              const SizedBox(width: 6),
-              Expanded(child: Text(standby ? 'Backup: ${standbyVendor?['name'] ?? backup?['vendor_id']}' : 'No backup on standby', style: const TextStyle(fontSize: 13))),
-            ]),
             if (vendor != null) QuoteWarning(vendor: vendor),
             if (vendor?['needs_price_reconfirmation'] == true) OutlinedButton.icon(
               onPressed: rechecking ? null : onReconfirm, icon: const Icon(Icons.fact_check_outlined), label: const Text('Reconfirm prices'),
@@ -87,6 +89,8 @@ class BookingCard extends StatelessWidget {
             const SizedBox(height: 8),
             TextButton.icon(onPressed: onQuotes, icon: const Icon(Icons.receipt_long_outlined), label: const Text('View quotes')),
           ],
+          if (primary != null && (selected || replacing)) BackupPanel(service: service, onRetry: onBackupConfirm,
+            onChoose: onBackupChoose, onReconfirm: onBackupReconfirm, busy: rechecking),
         ]),
       ),
     );

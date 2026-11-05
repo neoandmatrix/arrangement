@@ -7,7 +7,9 @@ from typing import Any
 import catalog
 import rules
 
-RESERVED = ("active", "awaiting_confirmation", "confirming", "confirmation_failed", "awaiting_changes")
+RESERVED = ("active", "awaiting_confirmation", "confirming", "confirmation_failed", "awaiting_changes", "replacement_pending")
+BACKUP_RESERVED = ('awaiting_backup_confirmation', 'confirming_backup', 'backup_confirmation_failed', 'standby',
+                   'backup_awaiting_changes', 'awaiting_activation', 'activating_backup', 'activation_awaiting_approval')
 RETRYABLE = ("pending", "no_answer", "failed", "interrupted", "callback")
 _YES = re.compile(r"\s*(?:yes(?: sir)?|yes confirmed|yes (?:that is|that's) (?:correct|right)|yes of course|yes okay|yes sure|agreed|okay|ok|sure|haan|haudu|avunu|sare|aama|seri|हाँ(?: जी)?|हां(?: जी)?|जी|जी हाँ|जी हां|हाँ सही है|हां सही है|हाँ ठीक है|हाँ बिल्कुल|हाँ बिल्कुल सही है|ठीक है|बिल्कुल|ಹೌದು(?: ಸರ್)?|ಹೌದು ಸರಿ|ಹೌದು ಸರಿಯಾಗಿದೆ|ಸರಿ|ಒಪ್ಪಿಗೆ|అవును|అవును సరే|సరే|ఒప్పుకుంటున్నాను|ஆம்|ஆமாம்|ஆமாம் சரி|சரி)[.!।]?\s*", re.I)
 
@@ -23,7 +25,7 @@ def agreed(text: str) -> bool:
     return bool(_YES.fullmatch(text))
 
 
-def terms(brief: dict[str, Any], quote: dict[str, Any], category: str) -> dict[str, Any]:
+def terms(brief: dict[str, Any], quote: dict[str, Any], category: str, purpose: str = 'booking') -> dict[str, Any]:
     arrive_by = rules.event_start(brief) - rules.ARRIVAL_LEAD[category]
     return {
         "function": catalog.function_label(brief), "family": brief["family_name"],
@@ -36,6 +38,7 @@ def terms(brief: dict[str, Any], quote: dict[str, Any], category: str) -> dict[s
         "quote": {k: quote.get(k) for k in ("available", "price_amount", "price_unit", "transport_charge",
                     "extra_charges_amount", "extra_charges_notes", "gst_included", "advance_amount", "includes_notes")},
         "total": rules.landed_cost(quote, brief),
+        'purpose': purpose,
     }
 
 
@@ -98,4 +101,30 @@ def questions(snapshot: dict[str, Any], language: str) -> list[dict[str, str]]:
             result.append({"key": f"service-{len(result)}", "text": templates[3].format(detail=" ".join(words[start:start + 12]))})
     for index, key in ((4, "base_price"), (5, "transport"), (6, "extras"), (7, "booking")):
         result.append({"key": key, "text": templates[index].format(**values)})
+    if snapshot.get('purpose') == 'standby':
+        standby = {
+            'en-IN': 'You are a standby backup, not booked and no advance is due now. Do you agree to these standby terms?',
+            'hi-IN': 'आप केवल बैकअप हैं, अभी बुकिंग नहीं है और एडवांस देय नहीं है। क्या आप इन शर्तों पर उपलब्ध रहेंगे?',
+            'kn-IN': 'ನೀವು ಬ್ಯಾಕಪ್ ಮಾತ್ರ, ಈಗ ಬುಕಿಂಗ್ ಅಥವಾ ಮುಂಗಡ ಇಲ್ಲ. ಈ ಷರತ್ತುಗಳಿಗೆ ಒಪ್ಪುತ್ತೀರಾ?',
+            'te-IN': 'మీరు బ్యాకప్ మాత్రమే, ఇప్పుడు బుకింగ్ లేదా అడ్వాన్స్ లేదు. ఈ షరతులకు అంగీకరిస్తారా?',
+            'ta-IN': 'நீங்கள் மாற்று ஏற்பாடு மட்டுமே, இப்போது முன்பதிவு அல்லது முன்பணம் இல்லை. இந்த நிபந்தனைகளை ஏற்கிறீர்களா?',
+        }.get(language)
+        result[-1] = {'key': 'standby', 'text': standby or 'You are a standby backup, not booked. Do you agree to remain available on these terms?'}
+        # The quoted advance is a contingent term, never a request for payment on standby.
+        result.insert(-1, {'key': 'contingent_total', 'text': {
+            'hi-IN': f"जरूरत पड़ने पर कुल {snapshot['total']} रुपये और एडवांस {quote['advance_amount']} रुपये होगा। क्या यह सही है?",
+            'kn-IN': f"ಅಗತ್ಯ ಬಂದರೆ ಒಟ್ಟು {snapshot['total']} ರೂಪಾಯಿ, ಮುಂಗಡ {quote['advance_amount']} ರೂಪಾಯಿ. ಸರಿಯೇ?",
+            'te-IN': f"అవసరమైతే మొత్తం {snapshot['total']} రూపాయలు, అడ్వాన్స్ {quote['advance_amount']} రూపాయలు. సరైనదేనా?",
+            'ta-IN': f"தேவைப்பட்டால் மொத்தம் {snapshot['total']} ரூபாய், முன்பணம் {quote['advance_amount']} ரூபாய். சரியா?",
+        }.get(language, f"If activated, total {snapshot['total']} rupees and advance {quote['advance_amount']} rupees. Is that correct?")})
     return [{**item, 'text': ' '.join(re.sub(r'[\[\]{}()_*`<>]', ' ', item['text']).split())} for item in result]
+
+
+def automatic_replacement_allowed(primary_quote: dict[str, Any], backup_quote: dict[str, Any], brief: dict[str, Any], category: str) -> bool:
+    """Automatic contingency authority never increases the family's approved cost or advance."""
+    primary_total = rules.landed_cost(primary_quote, brief)
+    backup_total = rules.landed_cost(backup_quote, brief)
+    budget = (brief.get('budget') or {}).get(category)
+    return (primary_total is not None and backup_total is not None and backup_total <= primary_total
+            and (backup_quote.get('advance_amount') or 0) <= (primary_quote.get('advance_amount') or 0)
+            and (not budget or backup_total <= budget))

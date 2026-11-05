@@ -257,7 +257,7 @@ class PriceWorkflowTest(unittest.TestCase):
         workflow.record_checkin(checkin["id"], "cancelled", None, "Cannot deliver")
         primary = next(b for b in store.bookings(self.event_id) if b["role"] == "primary")
         self.assertEqual(primary["vendor_id"], "K01")
-        self.assertIn("no unsafe backup", store.alerts(self.event_id)[0]["message"])
+        self.assertIn("No confirmed replacement", store.alerts(self.event_id)[0]["message"])
 
     def test_reconfirmation_mode_is_price_verification_not_booking_confirmation(self):
         cfg = SessionConfig.from_dict({"mode": "vendor_call", "vendor_id": "K01", "event_id": self.event_id, "reconfirm": "1"}, channel="app")

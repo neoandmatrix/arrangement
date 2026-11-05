@@ -16,8 +16,11 @@ import rules
 import store
 import workflow
 import confirmations
+import confirmation_rules
+import backups
 
 _tasks: set[asyncio.Task] = set()
+_confirmation_queued: set[int] = set()
 
 
 def spawn(coro) -> asyncio.Task:
@@ -126,8 +129,9 @@ async def reconfirm(event_id: int, brief: dict[str, Any], vendor_id: str) -> str
         quote = store.latest_quotes(event_id).get(vendor_id)
         bookings = [b for b in store.bookings(event_id) if b["vendor_id"] == vendor_id]
         primary = next((b for b in bookings if b['role'] == 'primary'), None)
-        status = primary['status'] if primary and primary['status'] in ('awaiting_confirmation', 'confirming', 'confirmation_failed', 'awaiting_changes') else "confirmed" if any(b["role"] == "primary" and b["status"] == "active" for b in bookings) else (
-            "standby" if any(b["status"] == "standby" for b in bookings) else "declined" if quote and quote.get("available") is False else "quoted" if quote else old_status)
+        backup = next((b for b in bookings if b['role'] == 'backup'), None)
+        status = primary['status'] if primary and primary['status'] in ('awaiting_confirmation', 'confirming', 'confirmation_failed', 'awaiting_changes', 'replacement_pending') else "confirmed" if any(b["role"] == "primary" and b["status"] == "active" for b in bookings) else (
+            backup['status'] if backup and backup['status'] in confirmation_rules.BACKUP_RESERVED else "declined" if quote and quote.get("available") is False else "quoted" if quote else old_status)
         store.set_enquiry(event_id, vendor_id, vendor["category"], status)
         if primary and primary['status'] in ('awaiting_confirmation', 'confirmation_failed', 'awaiting_changes'):
             if not any(u['vendor_id'] == vendor_id and u['status'] == 'pending' for u in store.updates(event_id)):
@@ -136,6 +140,13 @@ async def reconfirm(event_id: int, brief: dict[str, Any], vendor_id: str) -> str
                     spawn(confirmation_call(confirmation_id))
                 except ValueError:
                     pass  # unresolved prices stay blocked; never auto-confirm them
+        elif backup and backup['status'] in confirmation_rules.BACKUP_RESERVED:
+            try:
+                confirmation_id = backups.retry(event_id, vendor['category'])
+                if confirmation_id:
+                    queue_confirmation(confirmation_id)
+            except ValueError:
+                pass
 
 
 async def confirmation_call(confirmation_id: int) -> str:
@@ -144,15 +155,17 @@ async def confirmation_call(confirmation_id: int) -> str:
     await stop_superseded_confirmation_calls(initial['event_id'], initial['category'])
     try:
         record = confirmations.claim(confirmation_id)
-    except (ValueError, LookupError):
+    except (ValueError, LookupError) as error:
+        confirmations.finish(confirmation_id, 'failed', str(error))
         return 'superseded'
     if record is None:
         return 'already_started'
     event_id, brief = store.event(record['event_id'])
     vendor = store.vendor(record['vendor_id'])
     try:
+        purpose = 'standby_confirmation' if record['purpose'] == 'standby' else 'backup_activation' if record['purpose'] == 'replacement' else 'booking_confirmation'
         outcome = await channels.call(vendor, {'mode': 'confirmation', 'confirmation_id': confirmation_id,
-            'event_id': event_id, 'vendor_id': vendor['id']}, caller_info(brief, vendor, 'booking_confirmation'))
+            'event_id': event_id, 'vendor_id': vendor['id']}, caller_info(brief, vendor, purpose))
         latest = store.confirmation(confirmation_id)
         if latest['status'] == 'calling':
             status = 'no_answer' if outcome['result'] in ('no_answer', 'unreachable') else 'declined' if outcome['result'] == 'declined' else 'failed'
@@ -160,11 +173,31 @@ async def confirmation_call(confirmation_id: int) -> str:
             if outcome['result'] == 'declined':
                 status = 'no_answer'
             confirmations.finish(confirmation_id, status, 'No answer' if status == 'no_answer' else 'Call ended without booking confirmation', call_id=outcome.get('call_id'))
+        queue_pending_confirmations(event_id)
         return store.confirmation(confirmation_id)['status']
     except Exception:
         confirmations.finish(confirmation_id, 'failed', 'Confirmation call failed')
         logger.error('Booking confirmation {} failed', confirmation_id)
         return 'failed'
+
+
+def queue_confirmation(confirmation_id: int) -> None:
+    if confirmation_id in _confirmation_queued:
+        return
+    _confirmation_queued.add(confirmation_id)
+    async def run():
+        try:
+            await confirmation_call(confirmation_id)
+        finally:
+            _confirmation_queued.discard(confirmation_id)
+    spawn(run())
+
+
+def queue_pending_confirmations(event_id: int) -> None:
+    for record in store.confirmations(event_id):
+        latest = store.latest_confirmation(event_id, record['category'], record['role'])
+        if record['status'] == 'pending' and latest and latest['id'] == record['id']:
+            queue_confirmation(record['id'])
 
 
 async def stop_superseded_confirmation_calls(event_id: int, category: str) -> None:

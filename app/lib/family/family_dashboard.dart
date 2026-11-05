@@ -10,7 +10,7 @@ import 'view_helpers.dart';
 /// Three focused views of one occasion; changing tabs never changes bookings or rankings.
 class FamilyDashboard extends StatefulWidget {
   const FamilyDashboard({super.key, required this.state, required this.familyId, required this.busy,
-    required this.onRefresh, required this.onAct, required this.onCheckin, this.onCancel, this.error});
+    required this.onRefresh, required this.onAct, required this.onCheckin, this.onCancel, this.onChooseBackup, this.error});
   final Map<String, dynamic> state;
   final String familyId;
   final Set<String> busy;
@@ -19,6 +19,7 @@ class FamilyDashboard extends StatefulWidget {
   final Future<void> Function(int) onCheckin;
   final String? error;
   final Future<void> Function(String)? onCancel;
+  final Future<void> Function(String, String)? onChooseBackup;
 
   @override
   State<FamilyDashboard> createState() => _FamilyDashboardState();
@@ -81,7 +82,7 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
           child: Row(children: [
             const Icon(Icons.pending_actions, size: 20),
             const SizedBox(width: 8),
-            Expanded(child: Text('${_pending.length} ${_pending.any((u) => u['kind'] == 'quote') ? 'quote' : 'price'} revision${_pending.length == 1 ? '' : 's'} to review', style: const TextStyle(fontSize: 13))),
+            Expanded(child: Text('${_pending.length} ${_pending.any((u) => u['kind'] == 'backup_activation') ? 'replacement request' : _pending.any((u) => u['kind'] == 'confirmation_change') ? 'booking revision' : _pending.any((u) => u['kind'] == 'quote') ? 'quote revision' : 'price revision'}${_pending.length == 1 ? '' : 's'} to review', style: const TextStyle(fontSize: 13))),
             TextButton(onPressed: _bookings, child: const Text('Review')),
           ]),
         ),
@@ -109,6 +110,15 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
               if (id != null) widget.onAct(id, 'confirm', 'Booking confirmation call requested');
             },
             onCancel: widget.onCancel == null ? null : () => widget.onCancel!(service['category'] as String),
+            onBackupConfirm: () {
+              final id = booking(service, 'backup')?['vendor_id'] as String?;
+              if (id != null) widget.onAct(id, 'confirm-backup', 'Backup confirmation requested; it is not active yet');
+            },
+            onBackupChoose: widget.onChooseBackup == null ? null : (id) => widget.onChooseBackup!(service['category'] as String, id),
+            onBackupReconfirm: () {
+              final id = booking(service, 'backup')?['vendor_id'] as String?;
+              if (id != null) widget.onAct(id, 'reconfirm', 'Bandobast will recheck the backup quote');
+            },
           ),
         ]),
         _page('quotes', [

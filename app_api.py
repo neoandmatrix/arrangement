@@ -29,6 +29,7 @@ import store
 import workflow
 import confirmations
 import confirmation_rules
+import backups
 from conversation import brief_problems
 
 _LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
@@ -191,6 +192,7 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
         vendors.sort(key=lambda x: (x["rank"] is None, x["rank"] if x["rank"] is not None else 0))
         booked = {b["role"]: b for b in bookings if b["category"] == category}
         confirmation = confirmations.summary(event_id, category)
+        backup_confirmation = confirmations.summary(event_id, category, 'backup')
         if confirmation and 'primary' in booked and booked['primary']['status'] in confirmation_rules.RESERVED:
             approved_quote = store.confirmation(confirmation['id'])['approved_quote']
             for vendor in vendors:
@@ -209,7 +211,8 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
                 "vendors": vendors,
                 "discovered": found.get(category, []),
                 "booking": {role: {"vendor_id": b["vendor_id"], "status": b["status"],
-                                   **({'confirmation': confirmation} if role == 'primary' else {})} for role, b in booked.items()},
+                                   'confirmation': confirmation if role == 'primary' else backup_confirmation,
+                                   **({'secured': backups.secured(event_id, category)} if role == 'backup' else {})} for role, b in booked.items()},
             }
         )
     return {
@@ -219,9 +222,9 @@ def event_status(event_id: int, brief: dict[str, Any]) -> dict[str, Any]:
         "checkins": store.checkins(event_id),
         "updates": [{**u, "data": {**u["data"], "flags": rules.quote_flags(u["data"]["quote"], store.vendor(u["vendor_id"]), brief),
                                     "landed_cost": rules.landed_cost(u["data"]["quote"], brief)}}
-                     if u["kind"] in ("price", "quote") else u for u in store.updates(event_id)],
+                     if u["kind"] in ("price", "quote", 'backup_activation') else u for u in store.updates(event_id)],
         "confirmations": store.confirmations(event_id),
-        "calling_now": any(e["status"] in ("ringing", "in_call", "renegotiating", "reconfirming", "confirming") for e in status.values()),
+        "calling_now": any(e["status"] in ("ringing", "in_call", "renegotiating", "reconfirming", "confirming", 'confirming_backup', 'activating_backup') for e in status.values()),
     }
 
 
@@ -326,6 +329,36 @@ async def cancel_selection(category: str, request: Request):
     return {'ok': True}
 
 
+@api.post('/events/current/vendors/{vendor_id}/confirm-backup')
+async def retry_backup(vendor_id: str, request: Request):
+    event_id, _ = _event(request)
+    try:
+        category = store.vendor(vendor_id)['category']
+        selected = backups.selected(event_id, category)
+        if not selected or selected['vendor_id'] != vendor_id:
+            raise ValueError('This vendor is not the selected backup')
+        confirmation_id = backups.retry(event_id, category)
+    except (ValueError, KeyError, LookupError) as error:
+        raise HTTPException(400, str(error))
+    if confirmation_id:
+        enquiries.queue_confirmation(confirmation_id)
+    await enquiries.stop_superseded_confirmation_calls(event_id, category)
+    return {'ok': True, 'confirmation_id': confirmation_id}
+
+
+@api.post('/events/current/services/{category}/backup/{vendor_id}')
+async def select_backup(category: str, vendor_id: str, request: Request):
+    event_id, _ = _event(request)
+    try:
+        confirmation_id = backups.choose(event_id, category, vendor_id)
+    except (ValueError, KeyError, LookupError) as error:
+        raise HTTPException(400, str(error))
+    await enquiries.stop_superseded_confirmation_calls(event_id, category)
+    if confirmation_id:
+        enquiries.queue_confirmation(confirmation_id)
+    return {'ok': True, 'confirmation_id': confirmation_id}
+
+
 # Vendor
 
 
@@ -366,7 +399,7 @@ async def vendor_jobs(vendor_id: str, request: Request):
         return {"event": None, "enquiry": None, "booking": None, "checkins": []}
     event_id, brief = event
     booking = next((b for b in store.bookings(event_id) if b["vendor_id"] == vendor_id), None)
-    confirmation = confirmations.summary(event_id, booking['category']) if booking and booking['role'] == 'primary' else None
+    confirmation = confirmations.summary(event_id, booking['category'], booking['role']) if booking else None
     return {
         "event": {
             "label": catalog.function_label(brief),
