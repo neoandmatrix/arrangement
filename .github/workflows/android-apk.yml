@@ -64,7 +64,7 @@ jobs:
           if not isinstance(config, dict) or "project_info" not in config:
               print("::error::GOOGLE_SERVICES_JSON is not a google-services.json file. Set it with: "
                     "gh secret set GOOGLE_SERVICES_JSON < app/android/app/google-services.json "
-                    f"(it starts with {raw[:6]!r}, {len(raw)} characters)")
+                    "(expected plain JSON or base64-encoded JSON)")
               sys.exit(1)
           packages = [c["client_info"]["android_client_info"]["package_name"] for c in config.get("client", [])]
           if "ai.bandobast.app" not in packages:
@@ -77,6 +77,7 @@ jobs:
 
       - run: flutter pub get
       - run: flutter analyze
+      - run: flutter test
 
       # One APK per CPU type instead of one universal APK with all three (~94 MB, mostly WebRTC's
       # native library x3). Almost every phone needs app-arm64-v8a-*.apk.

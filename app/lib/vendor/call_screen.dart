@@ -7,6 +7,7 @@ import 'package:flutter_callkit_incoming/entities/entities.dart';
 import '../api.dart';
 import '../audio.dart';
 import '../format.dart';
+import 'call_layout.dart';
 
 /// A call with Bandobast, answered from the incoming-call screen.
 ///
@@ -79,7 +80,7 @@ class _CallScreenState extends State<CallScreen> {
           ? 'Details filled. Review the form and pin the venue before submitting.'
           : 'Your answers are filling the form. You can review and edit afterwards.');
     } else if (message['type'] == 'update_saved') {
-      setState(() => _notice = 'Update sent to the family. Price changes still need their approval.');
+      setState(() => _notice = 'Update saved for the family. Changed booking terms still need their review.');
     } else if (message['type'] == 'booking_confirmed') {
       setState(() => _notice = 'Booking confirmed. The agreed terms are saved for both sides.');
     } else if (message['type'] == 'standby_confirmed') {
@@ -87,7 +88,9 @@ class _CallScreenState extends State<CallScreen> {
     } else if (message['type'] == 'booking_pending_review') {
       setState(() => _notice = 'Changed terms need family review. The booking is not confirmed.');
     } else if (message['type'] == 'booking_declined') {
-      setState(() => _notice = 'Booking declined or withdrawn. The family has been notified.');
+      setState(() => _notice = widget.ring['purpose'] == 'standby_confirmation'
+          ? 'Standby declined or withdrawn. You were not booked; the family has been notified.'
+          : 'Booking declined or withdrawn. The family has been notified.');
     } else if (message['type'] == 'audio_ready' && message['echoCancellation'] != true) {
       setState(() => _notice ??= 'Use the earpiece or headphones to reduce echo on this phone.');
     }
@@ -131,15 +134,21 @@ class _CallScreenState extends State<CallScreen> {
     final ring = widget.ring;
     final direct = ring['kind'] == 'direct';
     final form = ring['purpose'] == 'form';
+    final purpose = switch (ring['purpose']) {
+      'booking_confirmation' => 'Confirming the family-approved booking',
+      'standby_confirmation' => 'Standby only · not a booking',
+      'backup_activation' => 'Confirming a replacement booking',
+      'checkin' => 'Scheduled booking follow-up',
+      'reconfirmation' => 'Rechecking each quoted charge',
+      _ => null,
+    };
     final service = serviceNames[ring['category']] ?? '';
     return PopScope(
       canPop: _ended,
       child: Scaffold(
         backgroundColor: const Color(0xFF5B2A12),
         body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
+          child: CallLayout(
               children: [
                 const SizedBox(height: 40),
                 const CircleAvatar(
@@ -161,7 +170,9 @@ class _CallScreenState extends State<CallScreen> {
                 ),
                 if (service.isNotEmpty)
                   Text('$service · ${prettyDate(ring['date'] as String?)} · ${ring['area'] ?? ''}',
-                      textAlign: TextAlign.center, style: const TextStyle(color: Colors.white54)),
+                       textAlign: TextAlign.center, style: const TextStyle(color: Colors.white54)),
+                if (purpose != null) Padding(padding: const EdgeInsets.only(top: 8),
+                    child: Text(purpose, textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFF2B33D), fontWeight: FontWeight.w600))),
                 const SizedBox(height: 28),
                 Text(_clock.isRunning ? _duration : _status,
                     style: const TextStyle(color: Colors.white, fontSize: 20, fontFeatures: [FontFeature.tabularFigures()])),
@@ -201,7 +212,6 @@ class _CallScreenState extends State<CallScreen> {
                 ),
                 const SizedBox(height: 32),
               ],
-            ),
           ),
         ),
       ),

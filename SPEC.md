@@ -14,14 +14,14 @@ Decided on 2026-11-03. Synthetic data only (contest rule): vendors are fictional
 | Family | The Bandobast app (Flutter, Android); family-facing text in any of Gnani's 10 languages | WhatsApp (later) |
 | Vendors | The same app in vendor mode: calls ring in the app over the internet (PCM WebSocket audio, Firebase push). Vendors without the app get a phone call (Twilio; code in the repo, needs a real number) | |
 | Money | Record the agreed advance and remind the family | Collecting or sending payments |
-| After booking | Confirmation call, check-ins, backup switch, post-event rating | A day-of emergency line (the check-ins and backup switch cover a last-minute failure) |
+| After booking | Confirmation call, check-ins, confirmed backup activation | Post-event rating (planned), a day-of emergency line |
 
 
 ## The app (decided 2026-11-03)
 
 One Flutter app, two roles chosen on first launch.
 
-**Family:** pin the venue on a map (OpenStreetMap), pick the occasion and variant, tick the services (the function's usual ones are pre-ticked), date and muhurat, guests, a budget and wishes per service. Submit, then watch it work: vendors found, called one by one, quotes in. Per quote: **approve**, **reject**, or **renegotiate** (Bandobast calls again and asks for a better price, the rules choosing the number). Approving books it and keeps the next best on standby.
+**Family:** pin the venue on a map (OpenStreetMap), pick the occasion and variant, tick the services (the function's usual ones are pre-ticked), date and muhurat, guests, a budget and wishes per service. Submit, then watch it work: vendors found, called one by one, quotes in. Per quote: **approve**, **reject**, or **renegotiate** (Bandobast calls again and asks for a better price, the rules choosing the number). Approving reserves the vendor; spoken confirmation completes the booking. A backup is only secured after its separate standby call.
 
 **Vendor:** pick which (demo) vendor you are. Calls from Bandobast ring full-screen, through Firebase push even when the app is closed, or the live connection while it's open. Answer and talk; the call runs through the same pipeline as every other channel. The vendor sees their enquiries and bookings.
 
@@ -33,7 +33,7 @@ the model. The family reviews the answers, selects the venue and submits explici
 or another note. Revised rates, including decreases, need family approval. Other charges remain
 unchanged. Operational risks use the existing backup rules. One update is collected per call.
 
-**Direct calls:** the family and its active booked vendor can call each other inside the app.
+**Direct calls:** the family and its approved primary vendor can call each other inside the app, including while confirmation is pending.
 Each family phone has a remembered temporary demo ID; vendors keep directory IDs such as C01.
 Direct audio is relayed through the backend, without an LLM, transcript or recording. This is
 demo identity under the shared app key, not production account authentication.
@@ -131,15 +131,15 @@ Every quote must cover all of its category's items before it can be saved, and e
 
 ## The flow
 
-### 1. Intake (family, WhatsApp or dashboard)
+### 1. Intake (family app; dashboard for testing)
 
-The family sends a voice note or text in their language. Bandobast asks one thing at a time:
+The family fills the form manually or through a guided voice call. Bandobast asks one thing at a time:
 function and variant, family name and contact, city and area, date and muhurat, guests, food and diet rules, rituals and their language, which vendors (suggesting the defaults for the function), budget per vendor.
-It reads back a summary in the family's language and saves the brief once they confirm.
+Voice fills a draft; the family chooses the venue pin, reviews it and submits explicitly. Dashboard voice intake remains a separate test entry.
 
 ### 2. Shortlist
 
-For each needed vendor type, the rules pick up to 3 vendors from the directory: right category, not ruled out by review warnings, ranked by rating and reliability score. The family can **add a vendor** by forwarding a contact on WhatsApp; it joins the shortlist.
+For each needed vendor type, the rules pick up to 3 synthetic vendors from the directory by category, distance, review warnings and rating. Discovered businesses are displayed only, never called. Forwarded WhatsApp contacts and post-event reliability scoring are future features.
 
 ### 3. Enquiry calls (vendor's language)
 
@@ -153,7 +153,7 @@ The family gets, per vendor type, the ranked quotes with total cost, flags (hidd
 
 Bandobast calls the approved vendor, reads back the agreed terms (date, time, price, advance), and gets a spoken yes. If the vendor changes anything, the family is asked again. Both sides get a written summary.
 
-### 6. Advance reminder (family)
+### 6. Advance reminder (planned)
 
 "Advance of ₹5,000 to Shree Krishna Caterers is due by 12 Nov." Bandobast records when the family marks it paid. It never handles money.
 
@@ -161,11 +161,11 @@ Bandobast calls the approved vendor, reads back the agreed terms (date, time, pr
 
 Calls at D-3 and D-1 (6 pm), then on the day two hours and 45 minutes before the vendor's arrival time. The rules switch to the standby vendor if the booked one cancels, misses two check-ins in a row, gives an arrival time after the deadline, or is still unsure at the final check. The family is told at once; a warning goes out for smaller slips.
 
-### 8. Rating (family, after the function)
+### 8. Rating (planned, after the function)
 
 "How was Shree Krishna Caterers? On time?" A 1 to 5 rating and an on-time yes or no per vendor. These feed a reliability score that ranks vendors in later shortlists.
 
-## Family messages (WhatsApp)
+## Family messages (planned WhatsApp integration; not in the app demo)
 
 All in the family's language, as text plus a voice note.
 
@@ -193,24 +193,29 @@ Landed cost; quote flags; ranking (bookable, fewest warnings, cost, rating, reli
 
 ## Demo story (60 seconds)
 
-1. My family's caterer backed out an hour before our griha pravesh in another state.
-1. Mummy sends a Hindi voice note on WhatsApp.
-2. A vendor's phone rings (Bandobast Partner app); the bot asks and negotiates in Kannada; the dashboard shows the Hindi translation and the saving.
-3. Mummy taps Approve on WhatsApp; a confirmation call locks it in.
-4. The morning of: the caterer says they can't make it; the backup is switched in and WhatsApp says so.
-5. Built on Gnani Prisma and Timbre.
+1. Tell the real motivation: the family's caterer backed out an hour before a housewarming in another state.
+2. Show a fictional family planning a griha pravesh in the app, using guided voice or the form and a manual venue pin.
+3. Show the synthetic caterer C03 answering and negotiating in Kannada; show the actual quote and verified savings.
+4. The family approves C03. Show booking confirmation and C02's separate standby confirmation.
+5. C03 reports cancellation through “Talk to Bandobast”. Show C02's activation call and the confirmed replacement in the timeline.
+6. Credit Gnani Prisma STT and Timbre TTS. Edit out waiting, not confirmations or decisions. This is a condensed video of real role-play calls, not a claim the entire run takes sixty seconds.
+
+The in-app Demo walkthrough gives setup and role-play values. Its sample form fills only answers;
+it never selects a venue, creates quotes or injects successful call results. The offline test
+`tests/test_demo_walkthrough.py` rehearses the state machine with synthetic transcripts and a
+fake clock; it is not a live Gnani voice test or submission video.
 
 ## Build status and order
 
-Done: function types and all six vendor categories, intake, enquiry calls with negotiation, quote rules, comparison, booking with backup, check-ins, risk and backup switch, dashboard, browser test calls, simulated phone calls, Twilio adapter.
+Done: family and vendor Android app, guided voice drafting, discovery and shortlists, multilingual
+enquiries and negotiation, field-bound price safeguards, family approval, primary confirmation,
+confirmed standby, separately confirmed replacement activation, automatic IST follow-ups with
+durable attempts, vendor updates, direct calls, focused family tabs and timeline, dashboard,
+browser testing, simulated phone adapter and CI APK builds.
 
-To build:
+Still to finish or verify:
 
-1. App API on the server: catalog, create a function from the form, status, approve / reject / renegotiate, vendor sign-in and presence, access key.
-2. Calling layer: ring the vendor's app (WebRTC call), else Twilio, else no answer; enquiries run one call at a time.
-3. Discovery and shortlist: directory with locations, OpenStreetMap near the pin, optional web search.
-4. Flutter app: family flow, vendor flow, incoming-call screen, Firebase push.
-5. Renegotiation call and the confirmation call after approval.
-6. Family language for the app's text and summaries.
-7. Deploy (HTTPS), demo video, README, post.
-8. Later: post-event rating, WhatsApp, control-room translation.
+1. Run the latest APK on three phones and rehearse the full live-call story, including failed and changed-term cases.
+2. Record the demo video. Review README and submission/social posts separately; those are owner-controlled deliverables.
+3. Deploy HTTPS and validate real tunnel/device behavior; local tests do not prove deployment or microphone/audio quality.
+4. Later: advance reminders/payment marking, family UI translations, occasion history, real account authentication, ratings/reliability scoring, WhatsApp and control-room translation.

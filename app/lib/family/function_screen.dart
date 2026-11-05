@@ -6,6 +6,7 @@ import '../api.dart';
 import '../settings.dart';
 import '../setup_screen.dart';
 import '../vendor/ringer.dart';
+import '../demo_guide_screen.dart';
 import 'family_dashboard.dart';
 import 'new_function_screen.dart';
 
@@ -72,7 +73,7 @@ class _FunctionScreenState extends State<FunctionScreen> {
   Future<void> _checkin(int id) async {
     try {
       await Api.post('/checkins/$id/call');
-      _snack('Calling the vendor now');
+      _snack('Follow-up queued; Bandobast will call when the line is free');
       await _load();
     } catch (e) {
       _snack('$e');
@@ -126,6 +127,8 @@ class _FunctionScreenState extends State<FunctionScreen> {
         title: const Text('Bandobast'),
         actions: [
           if (event != null) IconButton(onPressed: _newFunction, tooltip: 'Plan another function', icon: const Icon(Icons.add)),
+          IconButton(onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DemoGuideScreen(allowPlanning: true))),
+              tooltip: 'Demo walkthrough', icon: const Icon(Icons.help_outline)),
           IconButton(onPressed: _switchRole, tooltip: 'Switch role', icon: const Icon(Icons.swap_horiz)),
         ],
       ),

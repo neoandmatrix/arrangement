@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../call_actions.dart';
+import '../demo_guide_screen.dart';
 import '../family/confirmation_summary.dart';
 import '../family/view_helpers.dart';
 import '../format.dart';
@@ -64,7 +65,11 @@ class _VendorHomeState extends State<VendorHome> {
     return Scaffold(
       appBar: AppBar(
         title: Text(Settings.vendorName ?? 'Vendor'),
-        actions: [IconButton(onPressed: _switchRole, tooltip: 'Switch role', icon: const Icon(Icons.swap_horiz))],
+        actions: [
+          IconButton(onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DemoGuideScreen())),
+              tooltip: 'Demo walkthrough', icon: const Icon(Icons.help_outline)),
+          IconButton(onPressed: _switchRole, tooltip: 'Switch role', icon: const Icon(Icons.swap_horiz)),
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: _load,

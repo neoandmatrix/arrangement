@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../api.dart';
 import '../call_actions.dart';
+import '../demo_details.dart';
 import 'function_screen.dart';
 
 const _bengaluru = LatLng(12.9716, 77.5946);
@@ -16,7 +17,8 @@ const _userAgent = 'Bandobast app (student project, Great Indian AI Internship C
 
 /// The family describes the function: where, what, which services, when, and a budget.
 class NewFunctionScreen extends StatefulWidget {
-  const NewFunctionScreen({super.key});
+  const NewFunctionScreen({super.key, this.initialDraft});
+  final Map<String, dynamic>? initialDraft;
 
   @override
   State<NewFunctionScreen> createState() => _NewFunctionScreenState();
@@ -52,7 +54,10 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
   void initState() {
     super.initState();
     Api.get('/catalog').then((c) {
-      if (mounted) setState(() => _catalog = c as Map<String, dynamic>);
+      if (mounted) {
+        setState(() => _catalog = c as Map<String, dynamic>);
+        if (widget.initialDraft != null) _applyVoice(widget.initialDraft!);
+      }
     }).catchError((Object e) {
       if (mounted) setState(() => _loadError = '$e');
     });
@@ -96,6 +101,7 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
   void _applyVoice(Map<String, dynamic> draft) {
     if (!mounted) return;
     setState(() {
+      if ((_catalog!['languages'] as List).any((l) => l['code'] == draft['family_language'])) _language = draft['family_language'] as String;
       if (_functions.any((f) => f['key'] == draft['function_type'])) _function = draft['function_type'] as String;
       if ((_fn?['variants'] as List? ?? []).any((v) => v['key'] == draft['function_variant'])) _variant = draft['function_variant'] as String;
       if (draft['needs'] is List) {
@@ -121,6 +127,19 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
       }
       // Deliberately never read location or area from the model.
     });
+  }
+
+  Future<void> _useDemoDetails() async {
+    final replace = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
+      title: const Text('Use sample form details?'),
+      content: const Text('This replaces form answers with fictional demo details. Your map pin stays unchanged. No quotes, calls or bookings are created.'),
+      actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep my answers')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Use sample details'))],
+    ));
+    if (replace == true && mounted) {
+      _applyVoice(demoDetails());
+      _snack('Sample answers filled. Select the venue and review before submitting.');
+    }
   }
 
   List<Map<String, dynamic>> get _functions => (_catalog!['functions'] as List).cast<Map<String, dynamic>>();
@@ -256,7 +275,10 @@ class _NewFunctionScreenState extends State<NewFunctionScreen> {
     final guests = int.tryParse(_guests.text) ?? 0;
     final tentHint = guests > (_catalog!['tent_suggested_above_guests'] as int) && !_needs.contains('tent_sound');
     return Scaffold(
-      appBar: AppBar(title: const Text('Plan a function')),
+      appBar: AppBar(title: const Text('Plan a function'), actions: [
+        TextButton.icon(onPressed: _voiceBusy || _submitting ? null : _useDemoDetails,
+            icon: const Icon(Icons.edit_note), label: const Text('Sample')),
+      ]),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
         children: [

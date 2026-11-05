@@ -6,6 +6,7 @@ import 'booking_card.dart';
 import 'service_quotes.dart';
 import 'vendor_update_card.dart';
 import 'view_helpers.dart';
+import 'progress_summary.dart';
 
 /// Three focused views of one occasion; changing tabs never changes bookings or rankings.
 class FamilyDashboard extends StatefulWidget {
@@ -170,7 +171,6 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
   Widget _occasion() {
     final event = widget.state['event'] as Map<String, dynamic>;
     final brief = event['brief'] as Map<String, dynamic>;
-    final booked = _services.where(isBooked).length;
     final theme = Theme.of(context);
     return Card(
       margin: EdgeInsets.zero,
@@ -189,9 +189,7 @@ class _FamilyDashboardState extends State<FamilyDashboard> with SingleTickerProv
             _fact(Icons.people_outline, '${brief['guests']} guests'),
           ]),
           const SizedBox(height: 12),
-          Text('$booked of ${_services.length} services booked', style: theme.textTheme.bodySmall),
-          const SizedBox(height: 6),
-          LinearProgressIndicator(value: _services.isEmpty ? 0 : booked / _services.length, minHeight: 4, borderRadius: BorderRadius.circular(4)),
+          ProgressSummary(services: _services, pendingReviews: _pending.length),
           if (widget.state['calling_now'] == true) const Padding(
             padding: EdgeInsets.only(top: 10),
             child: Row(children: [SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)), SizedBox(width: 8), Expanded(child: Text('Bandobast is on a call…', style: TextStyle(fontSize: 13)))]),

@@ -99,6 +99,8 @@ void main() {
     await tester.scrollUntilVisible(find.text('Approve'), 180, scrollable: find.byType(Scrollable).last);
     expect(find.text('Demo Caterer'), findsOneWidget);
     expect(find.text('Demo Pandit'), findsNothing);
+    await tester.ensureVisible(find.text('Approve'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Approve'));
     await tester.pumpAndSettle();
     expect(actions, ['C01:approve']);
