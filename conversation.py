@@ -178,12 +178,16 @@ HIGH_PRICE_MEANING = (
 )
 # Bargaining (rules.counter_offer): ask about 10% below their quote; when in range, settle it out loud.
 BARGAIN_LINES = {
+    "maximum": "सर, ये रेट बहुत हाई है, हम मैक्सिमम {amount} रुपये {unit} तक कर सकते हैं, इतने में हो जाएगा?",
     "counter": "सर, {amount} रुपये {unit} कर दीजिए, हो जाएगा?",
     "accept": "ठीक है सर, {amount} रुपये {unit} फाइनल।",
+    "pass_on": "ठीक है सर, मैं {amount} रुपये {unit} फैमिली को बता दूँगा, वो डिसाइड करेंगे।",
 }
 BARGAIN_MEANING = {
+    "maximum": "Sir, that rate is very high. The most we can do is {amount} rupees {unit_en}. Can you do it for that?",
     "counter": "Sir, could you do it for {amount} rupees {unit_en}?",
     "accept": "Okay sir, {amount} rupees {unit_en} is final.",
+    "pass_on": "Okay sir, I'll tell the family {amount} rupees {unit_en}; they will decide.",
 }
 UNIT_WORDS = {"per_plate": ("पर प्लेट", "per plate"), "total": ("टोटल", "in total")}
 
@@ -830,8 +834,6 @@ async def _run_conversation(
             # The settled rate may be our counter they agreed to ("हाँ, हो जाएगा"): it's settled either way.
             quote["amount_checks"]["vendor_numbers"] = sorted(set(quote["amount_checks"]["vendor_numbers"]) | {outcome["rate_settled"]})
             quote["unverified"] = [f for f in quote["unverified"] if f != "price_amount"]
-        if await push_back_on_high_price(fn, quote, brief, category):
-            return
         problems = price_safety.issues(quote, brief, category)
         if problems:
             # Bounded recovery, not bounded safety: unresolved quotes remain blocked even after retries.
@@ -914,6 +916,53 @@ async def _run_conversation(
         context.add_message({"role": "developer", "content": EMPTY_TURN_PROMPT})
         return [LLMRunFrame()]
 
+    def advance_hint() -> list[Frame] | None:
+        """An advance above the whole quote (or above half of it) gets an answer right away, from code.
+
+        Seen live: "एडवांस 50,000" on a 10,000 job was read back and saved without a word.
+        """
+        if cfg.mode != "vendor_call" or outcome.get("advance_asks", 0) >= 2:
+            return None
+        dialogue = _transcript(context)
+        if not dialogue or dialogue[-1]["role"] != "vendor_or_family":
+            return None
+        question = next((t["text"] for t in reversed(dialogue) if t["role"] == "bandobast"), "")
+        if "advance_amount" not in price_safety._labels(question) and "advance_amount" not in price_safety._labels(dialogue[-1]["text"]):
+            return None
+        numbers = set(_amounts(dialogue[-1]["text"]))
+        if len(numbers) != 1:
+            return None
+        advance = numbers.pop()
+        vendor = store.vendor(cfg.vendor_id)
+        _, brief = store.event(event_id)
+        total = quote_total_so_far(dialogue, vendor["category"], brief)
+        if not total or advance <= total * rules.ADVANCE_LIMIT_SHARE:
+            return None
+        outcome["advance_asks"] = outcome.get("advance_asks", 0) + 1
+        if advance > total:
+            hi = f"सर, एडवांस टोटल से ज़्यादा नहीं हो सकता, टोटल लगभग {total} रुपये बन रहा है। एडवांस कितना लेंगे?"
+            en = f"Sir, the advance can't be more than the total, which comes to about {total} rupees. How much advance would you take?"
+        else:
+            half = rules._nice(total * rules.ADVANCE_LIMIT_SHARE, "total", coarse=False)
+            hi = f"सर, आधे से ज़्यादा एडवांस मुश्किल है, {half} रुपये तक एडवांस हो जाएगा?"
+            en = f"Sir, more than half in advance is difficult. Would {half} rupees as advance work?"
+        log.info(f"advance {advance} against a total of about {total}: asked again")
+        if language in ("hi-IN", "en-IN"):
+            return speak_fixed(hi if language == "hi-IN" else en)
+        context.add_message({"role": "developer", "content": f'Say only this, in their language, with amounts as digits: "{en}" Then wait.'})
+        return None
+
+    def quote_total_so_far(dialogue: list[dict[str, str]], category: str, brief: dict[str, Any]) -> int | None:
+        """Base rate (settled, or as stated) plus transport and extras stated so far; None before any rate."""
+        stated = price_safety.stated(dialogue, category)
+        rate = outcome.get("rate_settled") or (stated.get("price_amount") or (None, None))[0]
+        if not rate:
+            return None
+        unit = outcome.get("rate_unit") or (stated.get("price_amount") or (None, None))[1] or rules.price_plan(category, brief)["unit"]
+        base = rate * int(brief.get("guests") or 1) if unit == "per_plate" else rate
+        extras = sum((stated.get(f) or (0, None))[0] for f in ("transport_charge", "extra_charges_amount"))
+        return int(base + extras)
+
     def timing_hint() -> list[Frame] | None:
         """When the vendor asks what time or when ("cake कितने बजे देना है?"), code answers and re-asks.
 
@@ -968,16 +1017,17 @@ async def _run_conversation(
             return None
         round_no = outcome.get("bargain_round", 0) + 1
         result = rules.counter_offer(category, {"price_amount": amount, "price_unit": unit}, brief, round_no=round_no,
-                                     previous_ask=outcome.get("last_ask"))
+                                     previous_ask=outcome.get("last_ask"), previous_rate=outcome.get("last_rate"))
         if result.get("negotiate"):
             outcome["bargain_round"] = round_no
-            outcome["last_ask"] = result["price_amount"]
-            log.info(f"rate {amount}: counter {result['price_amount']} (round {round_no})")
-            return say_or_instruct("counter", result["price_amount"], result["price_unit"])
-        # a fair first quote needs no announcement; after any back-and-forth, settle it out loud
-        return settle(amount, unit, announce=round_no > 1 or bool(outcome.get("high_price_asks")))
+            outcome["last_ask"], outcome["last_rate"] = result["price_amount"], amount
+            log.info(f"rate {amount}: {result['reason']} {result['price_amount']} (round {round_no})")
+            return say_or_instruct(result["reason"], result["price_amount"], result["price_unit"])
+        # a fair first quote needs no announcement; after any back-and-forth, close it out loud
+        close = result.get("close", "accept")
+        return settle(amount, unit, announce=round_no > 1 or close == "pass_on", kind=close)
 
-    def settle(amount: int, unit: str, *, announce: bool) -> list[Frame] | None:
+    def settle(amount: int, unit: str, *, announce: bool, kind: str = "accept") -> list[Frame] | None:
         outcome["rate_settled"] = amount
         outcome["negotiation_done"] = True  # settled in the call; no second bargaining at save
         log.info(f"rate {amount} settled")
@@ -986,7 +1036,7 @@ async def _run_conversation(
                              "Go on with the next unanswered question."})
         if not announce:
             return None
-        frames = say_or_instruct("accept", amount, unit) or []
+        frames = say_or_instruct(kind, amount, unit) or []
         return frames + [LLMRunFrame()]
 
     def say_or_instruct(kind: str, amount: int, unit: str) -> list[Frame] | None:
@@ -1048,10 +1098,8 @@ async def _run_conversation(
         _, brief = store.event(event_id)
         unit = unit or outcome.get("rate_unit") or rules.price_plan(category, brief)["unit"]  # "50,000" after "please repeat"
         outcome["rate_unit"] = unit
+        return bargain_now(category, brief, amount, unit)  # no "please repeat" first: bargaining starts at once
         asks = outcome.get("high_price_asks", 0)
-        extreme = "price_amount" in price_safety.rechecks({"available": True, "price_amount": amount, "price_unit": unit}, brief, category)
-        if not extreme or asks >= len(HIGH_PRICE_LINES):
-            return bargain_now(category, brief, amount, unit)
         outcome["high_price_asks"] = asks + 1
         log.info(f"high price {amount} said: push back {asks + 1} now")
         text, say = high_price_line(asks, category, brief)
@@ -1136,11 +1184,14 @@ async def _run_conversation(
             quote,
             brief,
             round_no=outcome["negotiation_round"],
+            previous_ask=outcome.get("last_ask"),
+            previous_rate=outcome.get("last_rate"),
         )
         log.info(f"negotiation round {outcome['negotiation_round']}: {quote.get('price_amount')} -> {result}")
         if not result["negotiate"]:
             outcome["negotiation_done"] = True
             return False
+        outcome["last_ask"], outcome["last_rate"] = result["price_amount"], quote.get("price_amount")
         values = {"amount": result["price_amount"], "unit_key": result["price_unit"]}
         hindi, meaning = BARGAIN_LINES[result["reason"]], BARGAIN_MEANING[result["reason"]]
         await hold_save(fn, fixed_text(language, hindi, meaning, **values), fixed_line(language, hindi, meaning, **values))
@@ -1185,7 +1236,7 @@ async def _run_conversation(
             aggregators.user(),
             UnheardSpeech(ask_to_repeat),
             *([ConfirmationAnswerRouter(confirmation_state, advance_confirmation)] if booking_record else []),
-            BeforeReply(start_review, high_price_hint, function_details_hint, timing_hint),
+            BeforeReply(start_review, high_price_hint, function_details_hint, timing_hint, advance_hint),
             llm,
             question_gate,
             tts,

@@ -109,13 +109,11 @@ class PriceConversationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(quote["initial_price_verified"])
         self.assertEqual(workflow.book("priest", "P01")["primary"], "P01")
 
-    async def test_too_high_rate_gets_sorry_then_too_high_then_is_saved(self):
-        args = {**self.args, "price_amount": 400000}
-        speech = ["Base price 400000 in total", "Transport 0", "Extra charges 0", "Advance 0"]
-        results = await self.run_handlers(args, speech, 3, between=["400000 total", "400000 total"])
-        self.assertIn("ठीक से सुना नहीं", results[0]["next"])
-        self.assertIn("बहुत हाई", results[1]["next"])
-        self.assertNotIn("बहुत हाई", str(results[2]))  # the third time the amount stands, checks apply as usual
+    async def test_no_please_repeat_line_at_save(self):
+        args = {**self.args, "price_amount": 40000}
+        speech = ["Base price 40000 in total", "Transport 0", "Extra charges 0", "Advance 0"]
+        results = await self.run_handlers(args, speech, 1)
+        self.assertNotIn("ठीक से सुना नहीं", str(results))
 
     async def test_normal_rate_is_not_pushed_back(self):
         results = await self.run_handlers(self.args, ["Base price 11000 in total", "Transport 0", "Extra charges 0", "Advance 0"], 1)
@@ -160,8 +158,8 @@ class HighPriceRightAwayTest(unittest.IsolatedAsyncioTestCase):
             async def run(self, task):
                 context = captured["context"]
                 for mohan, vendor_says in [("एक प्लेट का रेट क्या है?", "10000 रुपये"),
-                                            (conversation.HIGH_PRICE_LINES[0], "पर plate 50,000।"),  # live call
-                                            ("एक प्लेट का रेट क्या है?", "अच्छा 550 कर देंगे")]:
+                                            ("सर, ये रेट बहुत हाई है, हम मैक्सिमम 620 रुपये पर प्लेट तक कर सकते हैं, इतने में हो जाएगा?", "पर plate 5,000।"),
+                                            ("सर, 740 रुपये पर प्लेट कर दीजिए, हो जाएगा?", "अच्छा 700 कर देंगे")]:
                     context.add_message({"role": "assistant", "content": mohan})
                     context.add_message({"role": "user", "content": vendor_says})
                     frames = hooks[1]()  # [start_review, high_price_hint]
@@ -181,9 +179,10 @@ class HighPriceRightAwayTest(unittest.IsolatedAsyncioTestCase):
              patch("conversation.BeforeReply", before_reply), \
              patch("conversation.WorkerRunner", Runner):
             await conversation.run_conversation(transport, cfg, sample_rate_in=16000, sample_rate_out=24000)
-        self.assertIn("ठीक से सुना नहीं", notes[0])  # spoken by code, word for word
-        self.assertIn("बहुत हाई", notes[1])
-        self.assertEqual(notes[2], "ठीक है सर, 550 रुपये पर प्लेट फाइनल।")  # in range after the push-back: settled out loud
+        # max 620 a plate (25000 for 40 guests): far above it, we open with the maximum; no "please repeat" line
+        self.assertEqual(notes[0], "सर, ये रेट बहुत हाई है, हम मैक्सिमम 620 रुपये पर प्लेट तक कर सकते हैं, इतने में हो जाएगा?")
+        self.assertEqual(notes[1], "सर, 740 रुपये पर प्लेट कर दीजिए, हो जाएगा?")  # halfway, capped at 20% over our maximum
+        self.assertEqual(notes[2], "ठीक है सर, 700 रुपये पर प्लेट फाइनल।")
 
 
 class FunctionDetailsTest(unittest.IsolatedAsyncioTestCase):
@@ -370,11 +369,16 @@ class BargainFlowTest(BargainNowTest):
         return spoken
 
     async def test_the_live_call_now_settles_on_their_counter(self):
-        spoken = await self.run_script(["2800", "2800", "700 कर सकते हैं आप?", "नहीं, 700 करिए, 700 में हो जाएगा।"])
-        self.assertIn("ठीक से सुना नहीं", spoken[0])
-        self.assertIn("बहुत हाई", spoken[1])
-        self.assertEqual(spoken[2], "सर, 650 रुपये पर प्लेट कर दीजिए, हो जाएगा?")
-        self.assertEqual(spoken[3], "ठीक है सर, 700 रुपये पर प्लेट फाइनल।")
+        spoken = await self.run_script(["2800", "700 कर सकते हैं आप?", "नहीं, 700 करिए, 700 में हो जाएगा।"])
+        self.assertIn("मैक्सिमम 620", spoken[0])
+        self.assertEqual(spoken[1], "सर, 660 रुपये पर प्लेट कर दीजिए, हो जाएगा?")
+        self.assertEqual(spoken[2], "ठीक है सर, 700 रुपये पर प्लेट फाइनल।")
+
+    async def test_holding_a_far_too_high_price_goes_to_the_family_not_final(self):
+        spoken = await self.run_script(["5000", "3000", "3000"])
+        self.assertIn("मैक्सिमम 620", spoken[0])
+        self.assertEqual(spoken[1], "सर, 740 रुपये पर प्लेट कर दीजिए, हो जाएगा?")
+        self.assertEqual(spoken[2], "ठीक है सर, मैं 3000 रुपये पर प्लेट फैमिली को बता दूँगा, वो डिसाइड करेंगे।")
 
 
 class BargainFlowFixesTest(BargainFlowTest):
@@ -384,11 +388,11 @@ class BargainFlowFixesTest(BargainFlowTest):
 
     async def test_rate_in_another_clause_is_caught_right_away(self):
         spoken = await self.run_script(["खाना पर plate rate होगा आपका कुछ, यही 2800 रुपये।"])
-        self.assertIn("ठीक से सुना नहीं", spoken[0])
+        self.assertIn("मैक्सिमम 620", spoken[0])
 
     async def test_agreeing_to_our_counter_settles_it(self):
-        spoken = await self.run_script(["1000 रुपये पर प्लेट।", "900 में हो जाएगा।"])
-        self.assertEqual(spoken, ["सर, 900 रुपये पर प्लेट कर दीजिए, हो जाएगा?", "ठीक है सर, 900 रुपये पर प्लेट फाइनल।"])
+        spoken = await self.run_script(["900 रुपये पर प्लेट।", "740 में हो जाएगा।"])
+        self.assertEqual(spoken, ["सर, 740 रुपये पर प्लेट कर दीजिए, हो जाएगा?", "ठीक है सर, 740 रुपये पर प्लेट फाइनल।"])
         spoken = await self.run_script(["800", "हाँ ठीक है, हो जाएगा"])
         self.assertEqual(spoken[1], "ठीक है सर, 700 रुपये पर प्लेट फाइनल।")
 
@@ -503,3 +507,67 @@ class TimingTest(FunctionDetailsTest):
             await conversation.run_conversation(transport, cfg, sample_rate_in=16000, sample_rate_out=24000)
         self.assertEqual(spoken[0], "फंक्शन 22 नवंबर को है, मुहूर्त सुबह 10 बजे का है, केक सुबह 8 बजे तक चाहिए। "
                                     "क्या आप दो किलो एगलेस चॉकलेट केक बना पाएंगे?")
+
+
+class AdvanceTest(FunctionDetailsTest):
+    """From a live call: "एडवांस 50,000" on a 10,000 job went by without a word."""
+
+    test_the_vendor_questions_from_the_call_are_recognised = None
+    test_details_line_and_prompt = None
+    test_code_answers_with_the_details_and_asks_the_rate = None
+
+    async def run_advance(self, advance):
+        hooks, captured, spoken = [], {}, []
+
+        class Pair:
+            def __init__(self, context, **kwargs):
+                captured["context"] = context
+
+            def user(self):
+                return DummyProcessor()
+
+            def assistant(self):
+                return DummyProcessor()
+
+        def before_reply(*given):
+            hooks.extend(given)
+            return DummyProcessor()
+
+        class Runner:
+            def __init__(self, **kwargs):
+                pass
+
+            async def run(self, task):
+                context = captured["context"]
+                for mohan, vendor, hook in [("पैकेज का रेट कितना होगा?", "10000", 1),
+                                            ("ट्रांसपोर्ट का कोई चार्ज है क्या?", "हाँ, 2000", 4),
+                                            ("एडवांस कितना चाहिए?", advance, 4)]:
+                    context.add_message({"role": "assistant", "content": mohan})
+                    context.add_message({"role": "user", "content": vendor})
+                    frames = hooks[hook]() or []
+                    spoken.append(next((f.text for f in frames if hasattr(f, "text")), None))
+
+        transport = SimpleNamespace(input=lambda: DummyProcessor(), output=lambda: DummyProcessor(),
+                                    event_handler=lambda name: lambda callback: callback)
+        cfg = conversation.SessionConfig(mode="vendor_call", channel="app", vendor_id="D02",
+                                         event_id=self.event_id, call_id="synthetic-advance")
+        with patch.dict("os.environ", {"GNANI_API_KEY": "synthetic-test-key", "SUPERVISOR": "0"}), \
+             patch("conversation.GnaniSTTService", return_value=DummyProcessor()), \
+             patch("conversation.GnaniTTSService", return_value=DummyProcessor()), \
+             patch("conversation.make_llm", return_value=FakeLLM()), \
+             patch("conversation.SileroVADAnalyzer"), \
+             patch("conversation.LLMContextAggregatorPair", Pair), \
+             patch("conversation.BeforeReply", before_reply), \
+             patch("conversation.WorkerRunner", Runner):
+            await conversation.run_conversation(transport, cfg, sample_rate_in=16000, sample_rate_out=24000)
+        return spoken[-1]
+
+    async def test_advance_above_the_total_is_challenged(self):
+        self.assertEqual(await self.run_advance("50,000 50,000"),
+                         "सर, एडवांस टोटल से ज़्यादा नहीं हो सकता, टोटल लगभग 12000 रुपये बन रहा है। एडवांस कितना लेंगे?")
+
+    async def test_advance_above_half_gets_one_polite_ask(self):
+        self.assertEqual(await self.run_advance("8000"), "सर, आधे से ज़्यादा एडवांस मुश्किल है, 6000 रुपये तक एडवांस हो जाएगा?")
+
+    async def test_a_normal_advance_passes(self):
+        self.assertIsNone(await self.run_advance("3000"))
