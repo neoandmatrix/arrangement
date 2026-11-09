@@ -38,8 +38,11 @@ class QuoteDetails extends StatelessWidget {
           _line('Base price${quote['price_unit'] == 'per_plate' ? ' per plate' : ''}', quotedMoney(quote['price_amount'])),
           if (quote['transport_charge'] != null) _line('Transport', quotedMoney(quote['transport_charge'])),
           if (quote['extra_charges_amount'] != null) _line('Extras', quotedMoney(quote['extra_charges_amount'])),
+          if (quote['extras_at_actuals'] == true)
+            _line('Billed later', '${quote['extra_charges_notes'] ?? 'Some costs'}, at actual cost'),
           if (quote['advance_amount'] != null) _line('Advance', quotedMoney(quote['advance_amount'])),
-          if (quote['gst_included'] != null) _line('GST', quote['gst_included'] == true ? 'Included' : 'Additional'),
+          if (quote['gst_included'] != null) _line('GST', quote['gst_included'] == true ? 'Included'
+              : quote['gst_percent'] != null ? 'Additional ${quote['gst_percent']}% (in the total)' : 'Additional'),
           if ('${quote['includes_notes'] ?? ''}'.isNotEmpty) _line('Covers', '${quote['includes_notes']}'),
         ],
         _line('Vendor', '${vendor['area'] ?? ''} · ${languageNames[vendor['language']] ?? vendor['language'] ?? ''}'),
