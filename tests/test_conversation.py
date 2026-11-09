@@ -95,3 +95,12 @@ class EmptyTurnTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocationRequestTest(unittest.TestCase):
+    def test_function_day_calls_ask_for_live_location_for_the_family(self):
+        import prompts
+        vendor = {"name": "Bake Ghar", "category": "cake", "language": "hi-IN"}
+        for label, asked in (("Morning: on the way?", True), ("Final: ETA check", True), ("D-1 confirmation", False)):
+            text = prompts.checkin_prompt(vendor=vendor, brief=prompts.SAMPLE_NAAMKARAN, label=label, quote=None)
+            self.assertEqual("फैमिली ने रिक्वेस्ट किया है, क्या आप अपनी लाइव लोकेशन" in text, asked, label)

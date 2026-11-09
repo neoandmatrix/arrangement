@@ -1,5 +1,6 @@
 """Synthetic standby consent, fresh activation and family authorization for extra cost/advance."""
 
+from unittest.mock import patch
 import sqlite3
 import tempfile
 import unittest
@@ -15,6 +16,8 @@ from confirmation_fixture import finish_confirmation
 from price_fixture import checked_quote
 
 
+@patch.object(backups, "STANDBY_CALLS", True)  # the standby-call flow, off by default since 2026-11-09
+@patch.object(workflow, "BACKUP_ONLY_ON_CANCEL", False)
 class BackupWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -268,6 +271,8 @@ class BackupWorkflowTest(unittest.TestCase):
         self.assertIn('not booked', confirmation_rules.questions(snapshot, 'en-IN')[-1]['text'])
 
 
+@patch.object(backups, "STANDBY_CALLS", True)  # the standby-call flow, off by default since 2026-11-09
+@patch.object(workflow, "BACKUP_ONLY_ON_CANCEL", False)
 class BackupMigrationTest(unittest.TestCase):
     def test_existing_primary_confirmation_is_preserved_by_role_migration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -287,3 +292,40 @@ class BackupMigrationTest(unittest.TestCase):
                 self.assertIsNone(store.latest_confirmation(1, 'cake', 'backup'))
             finally:
                 store.DB_PATH = original
+
+
+class BackupOnFileTest(unittest.TestCase):
+    """Default since 2026-11-09: no standby call after booking; the backup is called only if the primary cancels."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.original = store.DB_PATH
+        store.DB_PATH = Path(self.tmp.name) / 'backups.db'
+        self.event_id = store.save_event(prompts.SAMPLE_NAAMKARAN)
+        primary = checked_quote({'available': True, 'price_amount': 2400, 'price_unit': 'total',
+            'transport_charge': 0, 'extra_charges_amount': 0, 'advance_amount': 500}, 'cake')
+        for vendor_id, quote in (('K01', primary), ('K03', checked_quote({**primary, 'price_amount': 2200, 'advance_amount': 400}, 'cake'))):
+            store.save_quote(self.event_id, vendor_id, None, quote)
+        finish_confirmation(workflow.book('cake', 'K01')['confirmation_id'])
+
+    def tearDown(self):
+        store.DB_PATH = self.original
+        self.tmp.cleanup()
+
+    def test_no_standby_call_after_booking(self):
+        self.assertIsNone(store.latest_confirmation(self.event_id, 'cake', 'backup'))  # nobody is called
+        self.assertEqual(backups.selected(self.event_id, 'cake')['status'], 'backup_on_file')
+        self.assertEqual(confirmations.primary(self.event_id, 'cake')['status'], 'active')
+
+    def test_a_cancellation_calls_the_backup_to_book_them(self):
+        workflow.record_vendor_update(self.event_id, 'K01', {'kind': 'cancelled', 'notes': 'Cannot deliver'}, 'Cannot deliver')
+        activation = store.latest_confirmation(self.event_id, 'cake', 'backup')
+        self.assertEqual((activation['vendor_id'], activation['purpose']), ('K03', 'replacement'))
+        finish_confirmation(activation['id'])
+        self.assertEqual(confirmations.primary(self.event_id, 'cake')['vendor_id'], 'K03')
+        self.assertEqual(confirmations.primary(self.event_id, 'cake')['status'], 'active')
+
+    def test_a_late_arrival_only_warns_the_family(self):
+        workflow.record_vendor_update(self.event_id, 'K01', {'kind': 'delayed', 'eta': '09:55', 'notes': 'Traffic'}, 'Traffic')
+        self.assertIsNone(store.latest_confirmation(self.event_id, 'cake', 'backup'))
+        self.assertEqual(confirmations.primary(self.event_id, 'cake')['vendor_id'], 'K01')

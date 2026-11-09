@@ -81,9 +81,17 @@ class RulesTest(unittest.TestCase):
         self.assertEqual([s[0] for s in schedule][0], "D-3 confirmation")
         self.assertEqual(schedule[-1][1], "2026-11-15T05:45")  # 07:30 - 60 min lead - 45 min
 
+    def test_only_a_cancellation_switches_to_the_backup(self):
+        self.assertEqual(rules.assess_risk([{"status": "cancelled", "eta": None, "label": "D-1 confirmation"}], BRIEF, "caterer")["action"],
+                         "activate_backup")
+        for done in ([{"status": "delayed", "eta": "07:15", "label": "Final: ETA check"}],
+                     [{"status": "unreachable", "eta": None, "label": "D-1 confirmation"}, {"status": "unreachable", "eta": None, "label": "Morning: on the way?"}],
+                     [{"status": "unsure", "eta": None, "label": "Final: ETA check"}]):
+            self.assertEqual(rules.assess_risk(done, BRIEF, "caterer")["action"], "warn", done)  # the family is warned
+
     def test_late_eta_activates_backup(self):
         done = [{"status": "delayed", "eta": "07:15", "label": "Final: ETA check"}]
-        self.assertEqual(rules.assess_risk(done, BRIEF, "caterer")["action"], "activate_backup")
+        self.assertEqual(rules.assess_risk(done, BRIEF, "caterer", only_on_cancel=False)["action"], "activate_backup")
 
     def test_small_delay_only_warns(self):
         done = [{"status": "delayed", "eta": "06:15", "label": "Morning: on the way?"}]
@@ -95,7 +103,7 @@ class RulesTest(unittest.TestCase):
             {"status": "unreachable", "eta": None, "label": "D-1 confirmation"},
             {"status": "unreachable", "eta": None, "label": "Morning: on the way?"},
         ]
-        self.assertEqual(rules.assess_risk(done, BRIEF, "caterer")["action"], "activate_backup")
+        self.assertEqual(rules.assess_risk(done, BRIEF, "caterer", only_on_cancel=False)["action"], "activate_backup")
 
 
 @patch.object(price_safety, "RELAXED", False)  # the original strict guards

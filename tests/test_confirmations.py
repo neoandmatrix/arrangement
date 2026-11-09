@@ -1,5 +1,7 @@
 """Synthetic booking confirmation, immutable approvals, retries and spoken-agreement guards."""
 
+import backups
+from unittest.mock import patch
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,8 @@ from confirmation_fixture import finish_confirmation
 from price_fixture import checked_quote
 
 
+@patch.object(backups, "STANDBY_CALLS", True)  # the standby-call flow, off by default since 2026-11-09
+@patch.object(workflow, "BACKUP_ONLY_ON_CANCEL", False)
 class BookingConfirmationTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

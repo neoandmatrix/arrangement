@@ -46,6 +46,14 @@
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin: 14px 0; box-shadow: var(--shadow); }
   .card > h2:first-child, .card > h3:first-child { text-align: center; }
   .hero { text-align: center; }
+  .card.about > h2, .card.about > p.small { text-align: left; }
+  .about h2 { margin-top: 4px; }
+  .about h2 + p, .about h2 + ul { margin-top: 0; }
+  .about h2:not(:first-child) { margin-top: 18px; }
+  .about p, .about li { text-wrap: pretty; }
+  .about ul { margin: 6px 0 0; padding-left: 20px; }
+  .about li { margin: 8px 0; }
+  .about li b { color: var(--ink); }
   .hero > p { max-width: 52ch; margin-left: auto; margin-right: auto; text-wrap: pretty; }
   h2 { font-size: 20px; margin: 0 0 8px; text-wrap: balance; } h3 { font-size: 17px; margin: 0 0 6px; text-wrap: balance; }
   .muted { color: var(--muted); } .small { font-size: 13px; }
@@ -110,6 +118,16 @@
   .steps { margin: 12px auto 0; padding-left: 20px; color: var(--muted); font-size: 14px; max-width: 46ch; text-align: left; }
   details summary { cursor: pointer; text-align: center; color: var(--accent); margin: 8px 0; }
 
+  /* Desktop: a wide page. The landing puts the story and the demo side by side; other screens stay readable. */
+  @media (min-width: 960px) {
+    header, main { max-width: 1120px; }
+    main > .card, main > #callarea, main > div:not(.landing) { max-width: 820px; margin-left: auto; margin-right: auto; }
+    .landing { display: grid; grid-template-columns: 1.25fr 1fr; gap: 24px; align-items: start; }
+    .landing > .card { margin: 14px 0; }
+    .landing .choices { grid-template-columns: 1fr; }
+    .landing .hero { position: sticky; top: 16px; }
+  }
+
   @media (max-width: 520px) {
     header { padding-top: max(20px, env(safe-area-inset-top)); }
     header h1 { font-size: 23px; }
@@ -154,10 +172,30 @@ async function landing() {
   $app.innerHTML = `<div class="card muted center">Loading…</div>`;
   CONFIG = await api("/config");
   $app.innerHTML = `
+   <div class="landing">
+    <section class="card about" aria-labelledby="about-title">
+      <h2 id="about-title">The problem</h2>
+      <p>Arranging a griha pravesh, a puja or a naming ceremony takes dozens of phone calls: finding a priest, a caterer
+      and a decorator, asking each for a rate, bargaining, and then hoping they actually turn up. Families who live in another
+      city can't do it in person, and most local vendors work by phone, in Kannada, Hindi or Telugu, not on apps.
+      The idea came from our own family: arranging a housewarming in another state, the caterer let us down at the last hour.</p>
+      <h2>What Bandobast does</h2>
+      <ul>
+        <li><b>Calls local vendors in their own language</b> and asks the right questions for each service: date and timing,
+        what the family wants, the rate, transport, extras, GST and advance.</li>
+        <li><b>Bargains politely within the family's budget.</b> The counter-offers come from fixed rules in code, so the AI
+        never invents a number; every amount it records is one the vendor actually said.</li>
+        <li><b>Leaves the decision to the family.</b> They approve, reject or ask it to bargain again; nothing is booked without them.</li>
+        <li><b>Follows through.</b> After approval it confirms the booking on a call, keeps a backup vendor on standby, makes
+        check-in calls before the day, and switches to the backup if a vendor falls through.</li>
+      </ul>
+      <p class="small muted">Built as an Android app with a family mode and a vendor mode. This page lets you try the calling part
+      in your browser. Speech: Gnani Prisma v3.0 (speech-to-text) and Timbre v3.0 (voices) · Conversation: gpt-oss-120b on Groq ·
+      Prices, counter-offers and bookings: rules in code.</p>
+    </section>
     <div class="card hero">
       <h2>Try it in two minutes</h2>
-      <p class="muted">Bandobast is a voice agent for arranging griha pravesh, pujas and baby ceremonies in Bengaluru. It phones caterers,
-      decorators and priests in their own language, collects quotes, bargains politely within your budget, and brings you the deals.</p>
+      <p class="muted">Play either side of a real call. Mohan is Bandobast's calling agent.</p>
       <div class="choices">
         <button class="choice" id="fam"><span class="icon">🏠</span><b>Try as a family</b>
           <span class="muted">Fill a short form. Bandobast calls a simulated vendor (an AI with its own voice and a secret lowest price).
@@ -168,7 +206,8 @@ async function landing() {
       </div>
       <p class="small muted" style="margin-top:12px">${CONFIG.calls_left_today} demo calls left today · each call uses real Gnani speech models
       (Prisma speech-to-text, Timbre voices). All families and vendors are synthetic.</p>
-    </div>`;
+    </div>
+   </div>`;
   document.getElementById("fam").onclick = familyForm;
   document.getElementById("ven").onclick = vendorPick;
 }

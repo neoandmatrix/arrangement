@@ -26,6 +26,7 @@ class BackupPanel extends StatelessWidget {
     final canManage = primary?['status'] == 'active' || replacement;
     final theme = Theme.of(context);
     final label = switch (status) {
+      'backup_on_file' => 'Kept on file · called only if your vendor cancels',
       'awaiting_activation' || 'activating_backup' => 'Confirming replacement',
       'activation_awaiting_approval' => 'Activation needs your approval',
       'confirming_backup' || 'awaiting_backup_confirmation' => 'Checking standby availability',
@@ -39,7 +40,8 @@ class BackupPanel extends StatelessWidget {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Divider(),
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Icon(secured ? Icons.shield_outlined : Icons.info_outline, size: 20, color: secured ? Colors.green.shade800 : theme.colorScheme.secondary),
+          Icon(secured || status == 'backup_on_file' ? Icons.shield_outlined : Icons.info_outline, size: 20,
+              color: secured || status == 'backup_on_file' ? Colors.green.shade800 : theme.colorScheme.secondary),
           const SizedBox(width: 8),
           Expanded(child: Text('Backup · ${eligible ? label : 'No secured backup'}', style: theme.textTheme.titleSmall)),
         ]),

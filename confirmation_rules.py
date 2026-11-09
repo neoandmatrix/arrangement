@@ -8,7 +8,7 @@ import catalog
 import rules
 
 RESERVED = ("active", "awaiting_confirmation", "confirming", "confirmation_failed", "awaiting_changes", "replacement_pending")
-BACKUP_RESERVED = ('awaiting_backup_confirmation', 'confirming_backup', 'backup_confirmation_failed', 'standby',
+BACKUP_RESERVED = ('backup_on_file', 'awaiting_backup_confirmation', 'confirming_backup', 'backup_confirmation_failed', 'standby',
                    'backup_awaiting_changes', 'awaiting_activation', 'activating_backup', 'activation_awaiting_approval')
 RETRYABLE = ("pending", "no_answer", "failed", "interrupted", "callback")
 _YES = re.compile(r"\s*(?:yes(?: sir)?|yes confirmed|yes (?:that is|that's) (?:correct|right)|yes of course|yes okay|yes sure|agreed|okay|ok|sure|haan|haudu|avunu|sare|aama|seri|हाँ(?: जी)?|हां(?: जी)?|जी|जी हाँ|जी हां|हाँ सही है|हां सही है|हाँ ठीक है|हाँ बिल्कुल|हाँ बिल्कुल सही है|ठीक है|बिल्कुल|ಹೌದು(?: ಸರ್)?|ಹೌದು ಸರಿ|ಹೌದು ಸರಿಯಾಗಿದೆ|ಸರಿ|ಒಪ್ಪಿಗೆ|అవును|అవును సరే|సరే|ఒప్పుకుంటున్నాను|ஆம்|ஆமாம்|ஆமாம் சரி|சரி)[.!।]?\s*", re.I)

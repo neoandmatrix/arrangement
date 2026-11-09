@@ -58,6 +58,7 @@ const vendorStatuses = {
   'confirming': ('Confirming booking…', Icons.phone_in_talk),
   'confirmation_failed': ('Confirmation needed', Icons.phone_missed),
   'awaiting_changes': ('Changed terms · review needed', Icons.pending_actions),
+  'backup_on_file': ('Backup · called only if needed', Icons.shield_outlined),
   'standby': ('Backup on standby', Icons.shield_outlined),
   'standby_confirmed': ('Standby confirmed · not booked', Icons.shield_outlined),
   'awaiting_backup_confirmation': ('Standby not confirmed', Icons.pending_actions),

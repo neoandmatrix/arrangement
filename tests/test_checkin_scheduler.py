@@ -40,7 +40,7 @@ class PolicyTest(unittest.TestCase):
         self.assertIsNone(rules.assess_risk([{'status': 'skipped', 'label': 'D-3 confirmation'}, {'status': 'skipped', 'label': 'D-1 confirmation'}], prompts.SAMPLE_BRIEF, 'priest'))
 
     def test_confirmed_but_late_eta_still_activates_backup_rules(self):
-        risk = rules.assess_risk([{'status': 'confirmed', 'eta': '07:15', 'label': 'Final: ETA check'}], prompts.SAMPLE_BRIEF, 'caterer')
+        risk = rules.assess_risk([{'status': 'confirmed', 'eta': '07:15', 'label': 'Final: ETA check'}], prompts.SAMPLE_BRIEF, 'caterer', only_on_cancel=False)
         self.assertEqual(risk['action'], 'activate_backup')
 
 

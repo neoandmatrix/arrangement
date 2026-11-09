@@ -1,5 +1,7 @@
 """Inbound vendor changes must preserve agreed terms until the family decides."""
 
+import backups
+from unittest.mock import patch
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -14,6 +16,8 @@ from price_fixture import checked_quote
 from confirmation_fixture import book_confirmed, finish_replacement
 
 
+@patch.object(backups, "STANDBY_CALLS", True)  # the standby-call flow, off by default since 2026-11-09
+@patch.object(workflow, "BACKUP_ONLY_ON_CANCEL", False)
 class VendorUpdatesTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

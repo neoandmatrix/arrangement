@@ -1,5 +1,7 @@
 """Confirmation API starts/retries calls only after family approval; no provider network access."""
 
+import backups
+from unittest.mock import patch
 import os
 import tempfile
 import unittest
@@ -20,6 +22,8 @@ from confirmation_fixture import finish_confirmation
 from price_fixture import checked_quote
 
 
+@patch.object(backups, "STANDBY_CALLS", True)  # the standby-call flow, off by default since 2026-11-09
+@patch.object(workflow, "BACKUP_ONLY_ON_CANCEL", False)
 class ConfirmationAPITest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
