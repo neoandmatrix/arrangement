@@ -4,7 +4,7 @@ import unittest
 
 import asyncio
 
-from conversation import QuestionGate, drop_unspeakable, quote_problems
+from conversation import EMPTY_TURN_PROMPT, QuestionGate, _is_empty_turn, drop_unspeakable, quote_problems
 
 
 def spoken(chunks: list[str], **gate_options) -> str:
@@ -67,6 +67,30 @@ class QuoteProblemsTest(unittest.TestCase):
 
     def test_unavailable_vendor_needs_nothing_else(self):
         self.assertEqual(quote_problems({"available": False}, "decorator"), [])
+
+    def test_alcohol_as_payment_is_never_recorded(self):
+        base = {"available": True, "price_amount": 12000, "price_unit": "total", "extra_charges_amount": 0, "transport_charge": 0, "advance_amount": 0}
+        for note in ["plus 5 bottles of whisky", "साथ में पाँच बोतल दारू", "ऊपर से शराब चाहिए"]:
+            problems = quote_problems({**base, "extras_notes": note}, "priest")
+            self.assertEqual(len(problems), 1, note)
+            self.assertIn("प्रोफेशनली", problems[0])
+        self.assertEqual(quote_problems({**base, "extras_notes": "two water bottles per guest, rumali roti"}, "priest"), [])
+
+    def test_every_call_prompt_keeps_it_professional(self):
+        import prompts
+        vendor = {"name": "Shree Caterers", "category": "caterer", "language": "hi-IN"}
+        text = prompts.vendor_prompt(vendor=vendor, brief=prompts.SAMPLE_BRIEF)
+        self.assertIn("प्लीज़ प्रोफेशनली बात कीजिए", text)
+        self.assertIn("Don't echo their answers back", text)
+
+
+
+class EmptyTurnTest(unittest.TestCase):
+    def test_unrecognised_speech_counts_as_their_turn(self):
+        self.assertTrue(_is_empty_turn({"role": "developer", "content": EMPTY_TURN_PROMPT}))
+        self.assertIn("फिर से बोलिए", EMPTY_TURN_PROMPT)
+        self.assertFalse(_is_empty_turn({"role": "developer", "content": "Tools changed"}))
+        self.assertFalse(_is_empty_turn({"role": "user", "content": EMPTY_TURN_PROMPT}))
 
 
 if __name__ == "__main__":

@@ -106,8 +106,8 @@ class NewCategoryRulesTest(unittest.TestCase):
         offer = {"price_amount": 3000, "price_unit": "total", "transport_charge": 0}
         r1 = rules.counter_offer("cake", offer, NAAMKARAN, round_no=1, competing_total=None)
         self.assertTrue(r1["negotiate"])
-        self.assertEqual(r1["price_amount"], 2500)  # 15% off is 2550; totals round down to 100
-        self.assertFalse(rules.counter_offer("cake", offer, NAAMKARAN, round_no=2, competing_total=None)["negotiate"])
+        self.assertEqual(r1["price_amount"], 2700)  # about 10% below their 3000, as a round figure
+        self.assertFalse(rules.counter_offer("cake", offer, NAAMKARAN, round_no=3, competing_total=None)["negotiate"])  # 2 rounds
 
     def test_tent_checkins_are_scheduled_before_the_four_hour_setup(self):
         final = dict(rules.checkin_schedule(NAAMKARAN, "tent_sound"))["Final: ETA check"]

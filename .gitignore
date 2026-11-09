@@ -25,3 +25,6 @@ firebase-service-account*.json
 
 AGENTS.md
 CLAUDE.md
+
+# Pre-generated greeting audio (greeting.py)
+voice_cache/

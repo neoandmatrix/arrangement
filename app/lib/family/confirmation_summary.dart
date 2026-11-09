@@ -30,10 +30,13 @@ class ConfirmationSummary extends StatelessWidget {
         _line('Base price', '${quotedMoney(quote['price_amount'])}${quote['price_unit'] == 'per_plate' ? ' per plate' : ' total'}'),
         _line('Transport', quotedMoney(quote['transport_charge'])),
         _line('Extras', quotedMoney(quote['extra_charges_amount'])),
+        if (quote['extras_at_actuals'] == true)
+          _line('Billed later', '${quote['extra_charges_notes'] ?? 'Some costs'}, at actual cost'),
         _line('Total', quotedMoney(terms['total'])),
         _line(standby ? 'Advance if activated' : 'Advance', quotedMoney(quote['advance_amount'])),
         if (standby) const Align(alignment: Alignment.centerLeft, child: Text('Standby is not a booking. No advance is due now.')),
-        if (quote['gst_included'] != null) _line('GST', quote['gst_included'] == true ? 'Included' : 'Not included'),
+        if (quote['gst_included'] != null) _line('GST', quote['gst_included'] == true ? 'Included'
+            : quote['gst_percent'] != null ? 'Extra ${quote['gst_percent']}% (in the total)' : 'Not included'),
         for (final key in ['cuisine', 'rituals', 'wishes'])
           if ('${terms[key] ?? ''}'.isNotEmpty) _line(key == 'cuisine' ? 'Food' : key == 'rituals' ? 'Rituals' : 'Wishes', '${terms[key]}'),
         if ('${quote['includes_notes'] ?? ''}'.isNotEmpty) _line('Includes', '${quote['includes_notes']}'),
