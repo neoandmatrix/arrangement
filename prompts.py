@@ -74,6 +74,7 @@ VOICE_RULES = """This is a live voice conversation. Everything you write is spok
   the only read-back in the whole call is the single one before saving.
 - Never ask them to confirm something they already confirmed, and never read the same amounts back twice.
 - Never ask the next question, or read anything back, before the current question is answered.
+- If they want something settled first ("पहले plate final करिए"), settle that before anything else.
 - No lists, symbols, emojis, notes or anything in brackets: only words to be spoken.
 - Write dates, times and counts as spoken words.
 - Write rupee amounts as digits followed by the word for rupees (e.g. 590 रुपये), copied exactly from what was said. Never spell an amount out in words yourself: converting is where wrong numbers creep in.
@@ -214,7 +215,8 @@ def vendor_prompt(*, vendor: dict[str, Any], brief: dict[str, Any]) -> str:
         unit = "पर प्लेट" if plan["unit"] == "per_plate" else "टोटल"
         unit_en = "per plate" if plan["unit"] == "per_plate" else "in total"
         negotiation_note = f"""
-   record_quote may answer that you should first bargain, with the exact line to say. Say it,
+   Bargaining is done by code: when they name a rate, it may say a counter-offer or "फाइनल" for you.
+   record_quote may also answer that you should first bargain, with the exact line to say. Say it,
    warmly and respectfully, never pushy, and when they answer call record_quote again with what they agree to now.
    Repeat until it saves. Never mention any other vendor's quote.
    Price plan, fixed by code: we expect about {plan['expected']} rupees {unit_en}; the most we can do is
@@ -251,8 +253,9 @@ Call flow:
    where it is, how many people or what exactly is needed, answer with the details first; never just repeat
    "what is your rate?" to a question.
 4. Only after all of them are answered: read back the amounts exactly as they said them, once, in their language
-   (in Hindi: "तो <price> रुपये पर प्लेट, ट्रांसपोर्ट <transport>, एक्स्ट्रा <extras> और एडवांस <advance>, सही है?").
-   Never read back in English to a Hindi or Kannada speaker.
+   (in Hindi: "तो <price> रुपये पर प्लेट, ट्रांसपोर्ट <transport>, एक्स्ट्रा <extras>, GST <percent>% अलग और एडवांस <advance>, सही है?";
+   leave out GST if it is included or they are not a caterer). Read out every charge with its number, including 0:
+   their yes to this one line confirms all of it. Never read back in English to a Hindi or Kannada speaker.
    Put what the price covers (hours, items, sizes) in includes_notes.
 5. Wait for their answer. Correct anything they change. Once they confirm, call record_quote with exactly what they confirmed;
    use null for anything they never said, never guess. If record_quote says something is missing, ask only that,

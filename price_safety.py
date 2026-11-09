@@ -4,6 +4,7 @@ Unknown wording is deliberately unverified, never a reason to guess. Prompts can
 question, but they cannot turn a number, a 'yes', or a model-generated read-back into proof.
 """
 
+import os
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
@@ -161,6 +162,9 @@ _AT_ACTUALS = re.compile(r"बाद में.{0,25}(?:bill|बिल|add|ऐ�
 _AGREE = re.compile(r"हाँ|हां|सही|ठीक|बिल्कुल|\byes\b|\bhaan\b|\bcorrect\b|\bright\b|ಹೌದು|అవును|ஆம்", re.I)
 
 
+_AGREES_TO_OFFER = re.compile(r"हो जाएगा|हो जायेगा|कर देंगे|चलेगा|ठीक है|डन|\bdone\b|\bok(?:ay)?\b|ओके|\bfine\b", re.I)
+
+
 def _confirms_readback(text: str) -> bool:
     return (len(text.split()) <= 6 and bool(_AGREE.search(text)) and not _DENIAL.search(text)
             and not amount_mentions(text) and not _UNCERTAIN.search(text))
@@ -281,6 +285,7 @@ def audit(quote: dict[str, Any], dialogue: list[dict[str, str]], category: str, 
         inherited = proof.get("statements", []) if proof.get("amount") == amount and proof.get("unit") == unit and field not in (previous or {}).get("unverified", []) else []
         evidence[field] = {"amount": amount, "unit": unit, "statements": list(inherited[-2:])}
     question, turn = "", 0
+    their_numbers: set[int] = set()  # every amount the vendor has said so far, in any words
     for message in dialogue:
         if message["role"] in ("assistant", "bandobast"):
             question = message["text"] if "?" in message["text"] or "？" in message["text"] else ""
@@ -315,20 +320,27 @@ def audit(quote: dict[str, Any], dialogue: list[dict[str, str]], category: str, 
         assertions = _assertions(message["text"], question, category)
         for field in _all_included(message["text"], question):
             assertions[field] = (0, None)  # "13000 में": the number is the price it's included in, not this charge
-        if amount_mentions(question) and _confirms_readback(message["text"]):
-            # A yes to our read-back is a second statement of an amount they already said themselves; it can
-            # settle an unusual amount's recheck but never verify an amount on its own (see issues()).
+        offered = {amount for _, _, amount in amount_mentions(question)}
+        if (len(offered) == 1 and "price_amount" in _labels(question) and _confirms_readback(message["text"])
+                and _AGREES_TO_OFFER.search(message["text"])):
+            # "हाँ, हो जाएगा" to our single counter-offer "700 रुपये पर प्लेट कर दीजिए": they agreed to that rate.
+            assertions.setdefault("price_amount", (next(iter(offered)), _unit(question, category)))
+        elif amount_mentions(question) and _confirms_readback(message["text"]):
+            # The vendor said yes to our read-back: every amount in it is confirmed, and so is GST if it was read
+            # out with its percent. Nothing in it is asked again (owner's call for the demo: a yes to the full
+            # read-back is the vendor's confirmation). A "no" to a read-back still cancels it (above).
             for field, (amount, unit) in _assertions(question, "", category).items():
                 proof = evidence[field]
-                if (type(quote.get(field)) is int and amount == quote[field] and unit == proof["unit"]
-                        and any(st.get("scope") != "confirmed_readback" for st in proof["statements"])):
-                    statement_id = f"{call_id}:{turn}"
-                    if not any(st["id"] == statement_id for st in proof["statements"]):
-                        proof["statements"] = _keep_statements(proof["statements"] + [{
-                            "id": statement_id, "text": message["text"][:600], "question": question[:600],
-                            "scope": "confirmed_readback"}])
-        if quote.get("extras_at_actuals") is True and quote.get("extra_charges_amount") == 0 and _AT_ACTUALS.search(message["text"]):
-            assertions["extra_charges_amount"] = (0, None)  # no fixed extra now; billed later at actual cost
+                if type(quote.get(field)) is int and amount == quote[field] and unit == proof["unit"]:
+                    proof["statements"] = _keep_statements(proof["statements"] + [{
+                        "id": f"{call_id}:{turn}", "text": message["text"][:600], "question": question[:600],
+                        "scope": "readback_confirmed"}])
+            percent = _GST_PERCENT.search(question)
+            if _GST.search(question) and percent and int(percent.group(1)) in GST_RATES:
+                gst_statement = {"id": f"{call_id}:{turn}", "text": message["text"][:600], "percent": int(percent.group(1))}
+            elif _GST.search(question) and _INCLUDED.search(question) and not _DENIAL.search(question):
+                gst_statement = {"id": f"{call_id}:{turn}", "text": message["text"][:600]}
+        their_numbers.update(amount for _, _, amount in amount_mentions(message["text"]))
         for field, (amount, unit) in assertions.items():
             proof = evidence[field]
             if type(quote.get(field)) is int and amount == quote[field] and unit == proof["unit"]:
@@ -341,7 +353,26 @@ def audit(quote: dict[str, Any], dialogue: list[dict[str, str]], category: str, 
                 # A later correction invalidates earlier agreement with this proposed amount.
                 proof["statements"] = []
         question = ""  # a response cannot be scoped to an old unanswered question twice
-    return {"version": VERSION, "category": category, "fields": evidence, "gst_statement": gst_statement}
+    return {"version": VERSION, "category": category, "fields": evidence, "gst_statement": gst_statement,
+            "vendor_numbers": sorted(their_numbers)}
+
+
+# relaxed (default, the demo): an amount the vendor said anywhere counts. strict: each amount must be bound to
+# the question it answered (the original guards; their tests run in strict mode).
+RELAXED = os.environ.get("PRICE_CHECKS", "relaxed") != "strict"
+
+
+def grounded(quote: dict[str, Any], checks: dict[str, Any], field: str) -> bool:
+    """The amount is a number the vendor said themselves somewhere in the call (in any words, to any question).
+
+    Owner's call for the demo (2026-11-09): binding each number to the exact question kept rejecting correct
+    quotes over phrasing ("नहीं, 14000" to a counter-offer read as a rejection). The model still can't invent a
+    number: it must be one the vendor actually said. Zero still needs the vendor's own "no"/"included".
+    """
+    amount = quote.get(field)
+    if RELAXED and field == "extra_charges_amount" and amount == 0 and quote.get("extras_at_actuals") is True:
+        return True  # "extra setup का जो लगेगा, वहीं decide होगा": no fixed extra, billed later; the note says what
+    return RELAXED and type(amount) is int and amount > 0 and amount in set(checks.get("vendor_numbers") or [])
 
 
 def value_problems(quote: dict[str, Any], category: str) -> list[str]:
@@ -419,8 +450,14 @@ def issues(quote: dict[str, Any], brief: dict[str, Any], category: str) -> list[
         amount = quote.get(field)
         proof = fields.get(field, {})
         statements = proof.get("statements", []) if proof.get("amount") == amount and proof.get("unit") == (quote.get("price_unit") if field == "price_amount" else None) else []
+        if grounded(quote, checks, field) if checks.get("version") == VERSION and checks.get("category") == category else False:
+            continue  # a number they said themselves: settled
+        if amount is not None and field not in quote.get("unverified", []) and any(
+                isinstance(s, dict) and s.get("scope") == "readback_confirmed" for s in statements):
+            continue  # they said yes to our read-back of this amount: settled, never asked again
         own = {s.get("id") for s in statements if isinstance(s, dict) and s.get("id") and s.get("text") and s.get("scope") != "confirmed_readback"}
         confirmed = {s.get("id") for s in statements if isinstance(s, dict) and s.get("id") and s.get("scope") == "confirmed_readback"}
+        confirmed = {f"{i}:confirmed" for i in confirmed}
         # A yes to our read-back never proves an amount on its own, and only settles amounts that are unusual
         # relative to the rest of the quote, not ones over the hard limits (those need the vendor to repeat them).
         count = len(own) + (len(confirmed) if own and _within_hard_limits(field, quote, brief, category) else 0)

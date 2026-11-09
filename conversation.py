@@ -170,23 +170,69 @@ EMPTY_TURN_PROMPTS = (EMPTY_TURN_PROMPT, DEFAULT_EMPTY_USER_TURN_INTERRUPTED_PRO
 # When a rate is far above normal (price_safety.rechecks): first assume we misheard, then name our maximum.
 HIGH_PRICE_LINES = (
     "सॉरी सर, मैंने रेट ठीक से सुना नहीं, आप रिपीट कर सकते हैं क्या?",
-    "सर, ये अमाउंट बहुत हाई है। हम मैक्सिमम {maximum} रुपये {unit} तक कर सकते हैं, इतने में हो जाएगा?",
+    "सर, ये अमाउंट बहुत हाई है, कुछ रीज़नेबल बोलिए, कितना कर सकते हैं?",
 )
 HIGH_PRICE_MEANING = (
     "Sorry sir, I didn't hear the rate properly, could you repeat it?",
-    "Sir, this amount is very high. The most we can do is {maximum} rupees {unit_en}. Can you do it for that?",
+    "Sir, this amount is very high, please say something reasonable. How much can you do?",
 )
+# Bargaining (rules.counter_offer): ask about 10% below their quote; when in range, settle it out loud.
 BARGAIN_LINES = {
-    "expected": "सर, फैमिली का बजट {amount} रुपये {unit} के आसपास है, इतने में हो पाएगा?",
-    "maximum": "सर, हम मैक्सिमम {amount} रुपये {unit} तक कर सकते हैं, इतने में हो जाएगा?",
+    "counter": "सर, {amount} रुपये {unit} कर दीजिए, हो जाएगा?",
+    "accept": "ठीक है सर, {amount} रुपये {unit} फाइनल।",
 }
 BARGAIN_MEANING = {
-    "expected": "Sir, the family's budget is around {amount} rupees {unit_en}. Can you do it for that?",
-    "maximum": "Sir, the most we can do is {amount} rupees {unit_en}. Can you do it for that?",
+    "counter": "Sir, could you do it for {amount} rupees {unit_en}?",
+    "accept": "Okay sir, {amount} rupees {unit_en} is final.",
 }
+UNIT_WORDS = {"per_plate": ("पर प्लेट", "per plate"), "total": ("टोटल", "in total")}
+
+
+def fixed_text(language: str, hindi: str, meaning: str, **values: Any) -> str | None:
+    """The exact words code speaks itself (Hindi, English), or None where the model must translate."""
+    unit, unit_en = UNIT_WORDS[values.pop("unit_key", "total")]
+    filled = {**values, "unit": unit, "unit_en": unit_en}
+    if language == "hi-IN":
+        return hindi.format(**filled)
+    if language == "en-IN":
+        return meaning.format(**filled)
+    return None
+
+
+def fixed_line(language: str, hindi: str, meaning: str, **values: Any) -> str:
+    """The instruction to say one fixed line, for languages code can't speak verbatim."""
+    unit, unit_en = UNIT_WORDS[values.get("unit_key", "total")]
+    text = fixed_text(language, hindi, meaning, **values)
+    if text:
+        return f'Say exactly this and nothing else: "{text}"'
+    filled = {k: v for k, v in values.items() if k != "unit_key"}
+    return f'Say only this, in their language, with the amount as digits: "{meaning.format(**filled, unit=unit, unit_en=unit_en)}"'
+
+
 # The vendor asking about the job before quoting: size, people, place, what's needed.
 ASKS_SCOPE = re.compile(r"कितना बड़ा|कितनी बड़ी|कितने (?:लोग|गेस्ट|आदमी|मेहमान)|कितनी जगह|जगह कितनी|कहाँ (?:है|पर)|कहां (?:है|पर)|"
                         r"क्या[- ]क्या|कैसे[- ]कैसे|\bhow (?:big|many|much space)\b|\bwhere is\b|\bwhat (?:all|exactly)\b", re.I)
+def _amounts(text: str) -> list[int]:
+    return [amount for _, _, amount in price_safety.amount_mentions(text)]
+
+
+def amount_in_readback(question: str) -> bool:
+    """Our line read amounts back (two or more numbers) and asked if that's right."""
+    return len(_amounts(question)) >= 2
+
+
+_AGREES = re.compile(r"हो जाएगा|हो जायेगा|कर देंगे|चलेगा|ठीक है|डन|\bdone\b|\bok(?:ay)?\b|ओके|हाँ|हां|\byes\b", re.I)
+
+
+def agrees(text: str) -> bool:
+    """Yes to our counter-offer, with no new number of their own and no "no"."""
+    return bool(_AGREES.search(text)) and not _amounts(text) and not price_safety._DENIAL.search(text)
+
+
+# The vendor asking when: date, muhurat, delivery or arrival time.
+ASKS_TIME = re.compile(r"कितने बजे|किस (?:टाइम|time|समय)|कब (?:तक|देना|चाहिए|आना|पहुँचना|पहुंचना|है|का)|"
+                       r"मुहूर्त क्या|मुहुर्त क्या|मुहूर्त कब|(?:टाइम|time|समय) क्या|कौन सी (?:तारीख|डेट|date)|"
+                       r"\bwhat time\b|\bwhen (?:is|do|should)\b", re.I)
 RATE_QUESTION = {True: "एक प्लेट का रेट कितना है?", False: "टोटल रेट कितना है?"}  # keyed by is-caterer
 UNIT_WORDS = {"per_plate": ("पर प्लेट", "per plate"), "total": ("टोटल", "in total")}
 
@@ -631,6 +677,10 @@ async def _run_conversation(
         """Hard rule: no saving or hanging up while our question is unanswered (e.g. the read-back)."""
         if not question_gate.awaiting_answer:
             return False
+        if fn.function_name == "record_quote" and outcome.get("readback_confirmed_at") == user_turns():
+            # They just said yes to the read-back; a stray "?" in the same reply as the save (seen live:
+            # "धन्यवाद। परिवार ... ?") must not throw the confirmed quote away.
+            return False
         log.warning(f"{fn.function_name} refused: waiting for their answer")
         await fn.result_callback(
             {"ok": False, "error": f"You just asked them a question. Wait for their answer, then call {fn.function_name} again."},
@@ -766,12 +816,20 @@ async def _run_conversation(
             await reject(fn, ["the vendor must speak before any quote is recorded"])
             return
         category = store.vendor(cfg.vendor_id)["category"]
+        if outcome.get("rate_settled") is not None and fn.arguments.get("available") is not False:
+            # Code settled the rate in the call ("ठीक है सर, 14000 रुपये टोटल फाइनल।"): that is the price.
+            fn.arguments["price_amount"] = outcome["rate_settled"]
+            fn.arguments["price_unit"] = outcome.get("rate_unit") or fn.arguments.get("price_unit")
         fill_stated_charges(fn.arguments, _transcript(context), category)
         if problems := quote_problems(fn.arguments, category):
             await reject(fn, problems)
             return
         _, brief = store.event(event_id)
         quote = checked_quote(dict(fn.arguments), _transcript(context), brief, category, cfg.call_id, previous_quote)
+        if outcome.get("rate_settled") is not None and quote.get("price_amount") == outcome["rate_settled"]:
+            # The settled rate may be our counter they agreed to ("हाँ, हो जाएगा"): it's settled either way.
+            quote["amount_checks"]["vendor_numbers"] = sorted(set(quote["amount_checks"]["vendor_numbers"]) | {outcome["rate_settled"]})
+            quote["unverified"] = [f for f in quote["unverified"] if f != "price_amount"]
         if await push_back_on_high_price(fn, quote, brief, category):
             return
         problems = price_safety.issues(quote, brief, category)
@@ -807,7 +865,8 @@ async def _run_conversation(
             await cfg.on_result({"type": "update_saved", "update_id": result["update_id"]})
         await fn.result_callback({"ok": True, "bookable": not problems, "next":
             "The family must review the corrected charges; nothing agreed was changed." if result.get("update_id") else
-            "Some amounts are unverified. Tell them the family cannot book until these prices are rechecked." if problems else "The quote is recorded; the family will decide."})
+            "The quote is saved; the family will review it. Thank them, say the family will get back to them, and say goodbye. "
+            "Don't ask anything again." if problems else "The quote is recorded; the family will decide."})
 
     async def record_checkin(fn: FunctionCallParams) -> None:
         if await answer_pending(fn):
@@ -839,9 +898,7 @@ async def _run_conversation(
     def high_price_line(asks: int, category: str, brief: dict[str, Any]) -> tuple[str | None, str]:
         """(words code speaks itself, or None; the instruction for the model otherwise)."""
         plan = rules.price_plan(category, brief)
-        if asks >= 1:
-            outcome["maximum_offered"] = True  # we named our maximum; bargaining won't ask lower than it
-        values = {"maximum": plan["maximum"], "unit_key": plan["unit"]}
+        values = {"unit_key": plan["unit"]}
         return (fixed_text(language, HIGH_PRICE_LINES[asks], HIGH_PRICE_MEANING[asks], **values),
                 fixed_line(language, HIGH_PRICE_LINES[asks], HIGH_PRICE_MEANING[asks], **values))
 
@@ -856,6 +913,26 @@ async def _run_conversation(
             return speak_fixed(ASK_AGAIN[language])
         context.add_message({"role": "developer", "content": EMPTY_TURN_PROMPT})
         return [LLMRunFrame()]
+
+    def timing_hint() -> list[Frame] | None:
+        """When the vendor asks what time or when ("cake कितने बजे देना है?"), code answers and re-asks.
+
+        Seen live: the model ignored "कितने बजे देना है?" four times and kept asking "केक बना सकते हैं?".
+        """
+        if cfg.mode != "vendor_call" or language not in ("hi-IN", "en-IN") or outcome.get("timing_told", 0) >= 2:
+            return None
+        dialogue = _transcript(context)
+        if not dialogue or dialogue[-1]["role"] != "vendor_or_family" or not ASKS_TIME.search(dialogue[-1]["text"]):
+            return None
+        vendor = store.vendor(cfg.vendor_id)
+        _, brief = store.event(event_id)
+        hi, en = catalog.timing_line(vendor["category"], brief)
+        pending = next((t["text"] for t in reversed(dialogue) if t["role"] == "bandobast"), "")
+        pending = pending if pending.rstrip().endswith("?") and not ASKS_TIME.search(pending) else ""
+        text = f"{hi if language == 'hi-IN' else en} {pending}".strip()
+        outcome["timing_told"] = outcome.get("timing_told", 0) + 1
+        log.info("vendor asked about the time: told the fixed timing")
+        return speak_fixed(text) if text.endswith("?") else [TTSSpeakFrame(text)]
 
     def function_details_hint() -> list[Frame] | None:
         """When the vendor asks how big the function is or where, code answers with the fixed details line.
@@ -882,20 +959,42 @@ async def _run_conversation(
         return [TTSSpeakFrame(text)]
 
     def bargain_now(category: str, brief: dict[str, Any], amount: int, unit: str) -> list[Frame] | None:
-        """Above our maximum: say the maximum right away, once. In range: nothing to say; it's accepted."""
-        if category not in rules.NEGOTIABLE or outcome.get("maximum_offered"):
+        """Answer a rate the moment it's named: counter about 10% lower, or settle it out loud.
+
+        Settling ("ठीक है सर, 700 रुपये पर प्लेट फाइनल।") ends the rate talk: the model is told it's final
+        and goes on to the next question, so a vendor who says "पहले plate final करिए" gets exactly that.
+        """
+        if category not in rules.NEGOTIABLE:
             return None
-        result = rules.counter_offer(category, {"price_amount": amount, "price_unit": unit}, brief, round_no=1)
-        if not result.get("negotiate"):
+        round_no = outcome.get("bargain_round", 0) + 1
+        result = rules.counter_offer(category, {"price_amount": amount, "price_unit": unit}, brief, round_no=round_no,
+                                     previous_ask=outcome.get("last_ask"))
+        if result.get("negotiate"):
+            outcome["bargain_round"] = round_no
+            outcome["last_ask"] = result["price_amount"]
+            log.info(f"rate {amount}: counter {result['price_amount']} (round {round_no})")
+            return say_or_instruct("counter", result["price_amount"], result["price_unit"])
+        # a fair first quote needs no announcement; after any back-and-forth, settle it out loud
+        return settle(amount, unit, announce=round_no > 1 or bool(outcome.get("high_price_asks")))
+
+    def settle(amount: int, unit: str, *, announce: bool) -> list[Frame] | None:
+        outcome["rate_settled"] = amount
+        outcome["negotiation_done"] = True  # settled in the call; no second bargaining at save
+        log.info(f"rate {amount} settled")
+        context.add_message({"role": "developer", "content": f"The rate is settled at {amount} rupees "
+                             f"{UNIT_WORDS[unit][1]}. Never discuss, question or bargain the rate again. "
+                             "Go on with the next unanswered question."})
+        if not announce:
             return None
-        outcome["maximum_offered"] = True
-        log.info(f"rate {amount} above our maximum: said {result['price_amount']} now")
-        values = {"amount": result["price_amount"], "unit_key": result["price_unit"]}
-        text = fixed_text(language, BARGAIN_LINES["maximum"], BARGAIN_MEANING["maximum"], **values)
+        frames = say_or_instruct("accept", amount, unit) or []
+        return frames + [LLMRunFrame()]
+
+    def say_or_instruct(kind: str, amount: int, unit: str) -> list[Frame] | None:
+        values = {"amount": amount, "unit_key": unit}
+        text = fixed_text(language, BARGAIN_LINES[kind], BARGAIN_MEANING[kind], **values)
         if text:
-            return speak_fixed(text)
-        context.add_message({"role": "developer", "content": fixed_line(language, BARGAIN_LINES["maximum"], BARGAIN_MEANING["maximum"], **values)
-                             + " Then wait for their answer. Don't call any tool now."})
+            return speak_fixed(text) if text.endswith("?") else [TTSSpeakFrame(text)]
+        context.add_message({"role": "developer", "content": fixed_line(language, BARGAIN_LINES[kind], BARGAIN_MEANING[kind], **values)})
         return None
 
     def high_price_hint() -> list[Frame] | None:
@@ -904,33 +1003,55 @@ async def _run_conversation(
         Runs on each vendor turn before the model replies. If they just stated the base rate and it's
         unusually high, the model is told the exact line to say now (the same lines and counter as at save).
         """
-        if cfg.mode != "vendor_call" or cfg.reconfirm or outcome.get("high_price_asks", 0) >= len(HIGH_PRICE_LINES):
+        if cfg.mode != "vendor_call" or cfg.reconfirm or outcome.get("rate_settled") is not None:
             return
         dialogue = _transcript(context)
         if not dialogue or dialogue[-1]["role"] != "vendor_or_family":
             return
         # Their reply can arrive as two messages ("एक मिनट..." then "5000 रुपये"): read all since our last line.
         replies, question = [], ""
-        for turn in reversed(dialogue):
+        seen = outcome.get("rate_seen", 0)  # messages already handled: never re-read "3500" as a new answer
+        for index in range(len(dialogue) - 1, -1, -1):
+            turn = dialogue[index]
             if turn["role"] == "bandobast":
                 question = turn["text"]
                 break
-            replies.insert(0, turn["text"])
+            if index >= seen:
+                replies.insert(0, turn["text"])
+        outcome["rate_seen"] = len(dialogue)
+        if not replies:
+            return None
         said_text = " ".join(replies)
         category = store.vendor(cfg.vendor_id)["category"]
+        if amount_in_readback(question) and price_safety._confirms_readback(said_text):
+            outcome["readback_confirmed_at"] = user_turns()
+        last_ask = outcome.get("last_ask")
+        if last_ask and last_ask in _amounts(question) and (agrees(said_text) or set(_amounts(said_text)) == {last_ask}):
+            # "900 में हो जाएगा" / "हाँ, हो जाएगा" to our "900 कर दीजिए": they accepted our figure.
+            _, brief = store.event(event_id)
+            return settle(last_ask, outcome.get("rate_unit") or rules.price_plan(category, brief)["unit"], announce=True)
         said = price_safety._assertions(said_text, question, category).get("price_amount")
-        if not said and outcome.get("high_price_asks"):
-            # They are answering our "please repeat the rate": read the reply as a rate.
+        if not said and "price_amount" in price_safety._labels(question) and len(set(_amounts(said_text))) == 1:
+            # "खाना पर plate rate होगा आपका कुछ, यही 2800 रुपये।": the label and the number sit in different clauses.
+            said = (_amounts(said_text)[0], price_safety._unit(said_text, category) or price_safety._unit(question, category))
+        if not said and (outcome.get("high_price_asks") or outcome.get("bargain_round")):
+            # They are answering our "please repeat" or our counter-offer: read the reply as a rate.
             said = price_safety._assertions(said_text, RATE_QUESTION[category == "caterer"], category).get("price_amount")
+            if not said:
+                # "नहीं, 700 करिए, 700 में हो जाएगा।": in bargaining a no with one new number is their counter.
+                numbers = {amount for _, _, amount in price_safety.amount_mentions(said_text)} - {outcome.get("last_ask")}
+                if len(numbers) == 1:
+                    said = (numbers.pop(), None)
         if not said:
             return
         amount, unit = said
         _, brief = store.event(event_id)
         unit = unit or outcome.get("rate_unit") or rules.price_plan(category, brief)["unit"]  # "50,000" after "please repeat"
         outcome["rate_unit"] = unit
-        if "price_amount" not in price_safety.rechecks({"available": True, "price_amount": amount, "price_unit": unit}, brief, category):
-            return bargain_now(category, brief, amount, unit)
         asks = outcome.get("high_price_asks", 0)
+        extreme = "price_amount" in price_safety.rechecks({"available": True, "price_amount": amount, "price_unit": unit}, brief, category)
+        if not extreme or asks >= len(HIGH_PRICE_LINES):
+            return bargain_now(category, brief, amount, unit)
         outcome["high_price_asks"] = asks + 1
         log.info(f"high price {amount} said: push back {asks + 1} now")
         text, say = high_price_line(asks, category, brief)
@@ -1015,14 +1136,11 @@ async def _run_conversation(
             quote,
             brief,
             round_no=outcome["negotiation_round"],
-            maximum_offered=bool(outcome.get("maximum_offered")),
         )
         log.info(f"negotiation round {outcome['negotiation_round']}: {quote.get('price_amount')} -> {result}")
         if not result["negotiate"]:
             outcome["negotiation_done"] = True
             return False
-        if result["reason"] == "maximum":
-            outcome["maximum_offered"] = True
         values = {"amount": result["price_amount"], "unit_key": result["price_unit"]}
         hindi, meaning = BARGAIN_LINES[result["reason"]], BARGAIN_MEANING[result["reason"]]
         await hold_save(fn, fixed_text(language, hindi, meaning, **values), fixed_line(language, hindi, meaning, **values))
@@ -1067,7 +1185,7 @@ async def _run_conversation(
             aggregators.user(),
             UnheardSpeech(ask_to_repeat),
             *([ConfirmationAnswerRouter(confirmation_state, advance_confirmation)] if booking_record else []),
-            BeforeReply(start_review, high_price_hint, function_details_hint),
+            BeforeReply(start_review, high_price_hint, function_details_hint, timing_hint),
             llm,
             question_gate,
             tts,
@@ -1530,7 +1648,8 @@ def checked_quote(args: dict[str, Any], dialogue: list[dict[str, str]], brief: d
     """The model may supply quote fields, never audit metadata or a verified opening price."""
     quote = normalize_quote({k: v for k, v in args.items() if k in RECORD_QUOTE.properties})
     quote["amount_checks"] = price_safety.audit(quote, dialogue, category, call_id=call_id, previous=previous)
-    quote["unverified"] = [field for field in price_safety.FIELDS if not quote["amount_checks"]["fields"][field]["statements"]]
+    quote["unverified"] = [field for field in price_safety.FIELDS if not quote["amount_checks"]["fields"][field]["statements"]
+                           and not price_safety.grounded(quote, quote["amount_checks"], field)]
     return quote
 
 

@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import price_safety
@@ -28,6 +29,7 @@ def checked(quote=BASE, speech=None, category="caterer", previous=None):
     return checked_quote(quote, dialogue(quote) if speech is None else speech, BRIEF, category, "synthetic-call", previous)
 
 
+@patch.object(price_safety, "RELAXED", False)  # the original strict guards
 class PriceSafetyTest(unittest.TestCase):
     def test_digits_grouping_and_indian_scales(self):
         self.assertEqual(price_safety.numbers_heard("₹2,50,000, 1.5 lakh, ५ हजार, ೫ ಲಕ್ಷ, ౫ వేలు"), {250000, 150000, 5000, 500000})
@@ -66,8 +68,13 @@ class PriceSafetyTest(unittest.TestCase):
         self.assertNotIn("transport_charge", quote["unverified"])
         self.assertIn("price_amount", quote["unverified"])
 
-    def test_multiple_charge_readback_and_yes_do_not_verify_invented_amounts(self):
+    def test_yes_to_the_full_readback_confirms_the_amounts_in_it(self):
+        # Owner's call for the demo: a yes to the read-back is the vendor's confirmation of what was read out.
         speech = [{"role": "assistant", "text": "Price 450 per plate, transport 1500 and advance 5000, right?"}, {"role": "user", "text": "Yes"}]
+        self.assertEqual(set(checked(speech=speech)["unverified"]), {"extra_charges_amount"})  # not read out, not confirmed
+
+    def test_no_to_the_readback_confirms_nothing(self):
+        speech = [{"role": "assistant", "text": "Price 450 per plate, transport 1500 and advance 5000, right?"}, {"role": "user", "text": "No"}]
         self.assertEqual(set(checked(speech=speech)["unverified"]), set(price_safety.FIELDS))
 
     def test_omitted_zero_is_not_verified_but_explicit_no_charge_is(self):
@@ -171,10 +178,10 @@ class PriceSafetyTest(unittest.TestCase):
         twice = checked(large, dialogue(large, 2), "priest")
         self.assertEqual(price_safety.issues(twice, BRIEF, "priest"), [])
 
-    def test_yes_to_large_readback_does_not_count_as_a_repeat(self):
+    def test_yes_to_a_readback_settles_even_a_large_amount(self):
         large = {**BASE, "transport_charge": 500000}
         speech = dialogue(large) + [{"role": "assistant", "text": "Transport is 500000, correct?"}, {"role": "user", "text": "Yes"}]
-        self.assertTrue(any(p["field"] == "transport_charge" for p in price_safety.issues(checked(large, speech), BRIEF, "caterer")))
+        self.assertFalse(any(p["field"] == "transport_charge" for p in price_safety.issues(checked(large, speech), BRIEF, "caterer")))
 
     def test_repeating_number_twice_in_one_utterance_is_not_two_confirmations(self):
         large = {**BASE, "transport_charge": 500000}
@@ -220,6 +227,7 @@ class PriceSafetyTest(unittest.TestCase):
         self.assertFalse(rules.counter_offer("caterer", offer, BRIEF, round_no=1, competing_total=None)["negotiate"])
 
 
+@patch.object(price_safety, "RELAXED", False)  # the original strict guards
 class PriceWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -427,6 +435,7 @@ class FlexibleExtrasTest(unittest.TestCase):
         self.assertIn("extra_charges_amount", {p["field"] for p in price_safety.issues(quote, BRIEF, "decorator")})
 
 
+@patch.object(price_safety, "RELAXED", False)  # the original strict guards
 class ConfirmedReadbackTest(unittest.TestCase):
     """From a live call: transport 2000 on a 2500 base was asked three times despite "हाँ हाँ, सही है"."""
 
@@ -454,11 +463,8 @@ class ConfirmedReadbackTest(unittest.TestCase):
     def test_without_the_yes_it_still_needs_a_repeat(self):
         self.assertIn("transport_charge", self.fields(self.QUOTE, "एक मिनट"))
 
-    def test_a_yes_never_proves_an_amount_they_never_said(self):
-        self.assertIn("transport_charge", self.fields({**self.QUOTE, "transport_charge": 3000}, "हाँ हाँ, सही है।"))
-        speech = [{"role": "assistant", "text": "तो ट्रांसपोर्ट 2000 रुपये, सही है?"}, {"role": "user", "text": "हाँ"}]
-        checks = price_safety.audit(self.QUOTE, speech, "photographer", call_id="rb")
-        self.assertEqual(checks["fields"]["transport_charge"]["statements"], [])
+    def test_a_yes_only_confirms_what_was_read_out(self):
+        self.assertIn("transport_charge", self.fields({**self.QUOTE, "transport_charge": 3000}, "हाँ हाँ, सही है।"))  # we read 2000
 
 
 class RepeatedRateTest(unittest.TestCase):
@@ -485,3 +491,72 @@ class RepeatedRateTest(unittest.TestCase):
         speech = [{"role": "assistant", "text": "पर प्लेट रेट कितना होगा?"}, {"role": "user", "text": "1200 रुपये"},
                   {"role": "assistant", "text": "तो 1200 रुपये पर प्लेट, सही है?"}, {"role": "user", "text": "नहीं"}]
         self.assertEqual(price_safety.audit(quote, speech, "caterer", call_id="rate")["fields"]["price_amount"]["statements"], [])
+
+
+class AgreedCounterTest(unittest.TestCase):
+    def test_yes_to_our_single_counter_offer_is_their_rate(self):
+        quote = {"available": True, "price_amount": 700, "price_unit": "per_plate"}
+        speech = [{"role": "assistant", "text": "पर प्लेट रेट कितना होगा?"}, {"role": "user", "text": "800"},
+                  {"role": "assistant", "text": "सर, 700 रुपये पर प्लेट कर दीजिए, हो जाएगा?"}, {"role": "user", "text": "हाँ ठीक है, हो जाएगा"}]
+        checks = price_safety.audit(quote, speech, "caterer", call_id="agree")
+        self.assertEqual(len(checks["fields"]["price_amount"]["statements"]), 1)
+
+    def test_a_yes_to_a_readback_with_a_unit_mismatch_is_not(self):
+        quote = {"available": True, "price_amount": 700, "price_unit": "total"}
+        speech = [{"role": "assistant", "text": "तो 700 रुपये पर प्लेट, सही है?"}, {"role": "user", "text": "हाँ"}]
+        self.assertEqual(price_safety.audit(quote, speech, "caterer", call_id="agree")["fields"]["price_amount"]["statements"], [])
+
+
+class ReadbackOfTheirNumberTest(unittest.TestCase):
+    """From a live call: "candle decoration 10000", said twice and confirmed, still counted as unverified."""
+
+    def test_confirmed_readback_of_a_number_they_said_is_verified(self):
+        quote = {"available": True, "price_amount": 3500, "price_unit": "total", "transport_charge": 1000,
+                 "extra_charges_amount": 10000, "advance_amount": 2500}
+        speech = [
+            {"role": "assistant", "text": "इसका रेट कितना होगा?"}, {"role": "user", "text": "3500"},
+            {"role": "assistant", "text": "एडवांस कितना चाहिए?"}, {"role": "user", "text": "2500"},
+            {"role": "assistant", "text": "ट्रांसपोर्ट का कोई चार्ज है क्या?"}, {"role": "user", "text": "हाँ, 1000 रुपये।"},
+            {"role": "assistant", "text": "candle decoration का चार्ज कितना होगा?"}, {"role": "user", "text": "10,000 रुपये।"},
+            {"role": "assistant", "text": "तो 3500 रुपये टोटल, ट्रांसपोर्ट 1000 रुपये, एक्स्ट्रा 10000 रुपये और एडवांस 2500 रुपये, सही है?"},
+            {"role": "user", "text": "हाँ, सही है।"},
+        ]
+        quote["amount_checks"] = price_safety.audit(quote, speech, "cake", call_id="cd")
+        self.assertEqual([p["field"] for p in price_safety.issues(quote, BRIEF, "cake")], [])
+
+    def test_a_number_read_out_and_confirmed_counts(self):
+        quote = {"available": True, "price_amount": 3500, "price_unit": "total", "extra_charges_amount": 7000}
+        speech = [{"role": "assistant", "text": "इसका रेट कितना होगा?"}, {"role": "user", "text": "3500"},
+                  {"role": "assistant", "text": "तो 3500 रुपये टोटल और एक्स्ट्रा 7000 रुपये, सही है?"}, {"role": "user", "text": "हाँ"}]
+        quote["amount_checks"] = price_safety.audit(quote, speech, "cake", call_id="cd")
+        self.assertNotIn("extra_charges_amount", [p["field"] for p in price_safety.issues(quote, BRIEF, "cake")])
+
+
+class RelaxedChecksTest(unittest.TestCase):
+    """From a live call: a correct quote (14000, transport 2000, extras on site, advance 2000) was refused over phrasing."""
+
+    SPEECH = [
+        {"role": "assistant", "text": "इसका रेट कितना होगा?"}, {"role": "user", "text": "15000"},
+        {"role": "assistant", "text": "सर, 13500 रुपये टोटल कर दीजिए, हो जाएगा?"}, {"role": "user", "text": "14000 में कर लेते हैं।"},
+        {"role": "assistant", "text": "सर, 12500 रुपये टोटल कर दीजिए, हो जाएगा?"}, {"role": "user", "text": "नहीं, 14000।"},
+        {"role": "assistant", "text": "ट्रांसपोर्ट का कोई चार्ज है क्या?"}, {"role": "user", "text": "transport का हाँ, 2000 लगेगा।"},
+        {"role": "assistant", "text": "एक्स्ट्रा सेटअप का चार्ज कितना होगा?"}, {"role": "user", "text": "वो तो depend करता है वहीं पर वो decide होगा"},
+        {"role": "assistant", "text": "एडवांस कितना चाहिए?"}, {"role": "user", "text": "2,000"},
+    ]
+    QUOTE = {"available": True, "price_amount": 14000, "price_unit": "total", "transport_charge": 2000,
+             "extra_charges_amount": 0, "extras_at_actuals": True, "advance_amount": 2000}
+
+    def issues(self, quote):
+        quote = dict(quote)
+        quote["amount_checks"] = price_safety.audit(quote, self.SPEECH, "photographer", call_id="rel")
+        return {p["field"] for p in price_safety.issues(quote, BRIEF, "photographer")}
+
+    def test_numbers_they_said_are_accepted(self):
+        self.assertEqual(self.issues(self.QUOTE), set())
+
+    def test_an_invented_number_is_still_refused(self):
+        self.assertIn("transport_charge", self.issues({**self.QUOTE, "transport_charge": 9000}))
+
+    @patch.object(price_safety, "RELAXED", False)
+    def test_strict_mode_keeps_the_old_guards(self):
+        self.assertTrue(self.issues(self.QUOTE))

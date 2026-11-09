@@ -170,6 +170,15 @@ def _rate(offer: dict[str, Any], unit: str, guests: int) -> float | None:
     return price
 
 
+BARGAIN_SHARE = 0.90  # ask for about 10% below their quote
+
+
+def _nice(amount: float, unit: str) -> int:
+    """A round figure people say: nearest 50 a plate; nearest 500 (100 under 5,000) for a total."""
+    step = 50 if unit == "per_plate" else (500 if amount >= 5000 else 100)
+    return int(round(amount / step) * step)
+
+
 def counter_offer(
     category: str,
     offer: dict[str, Any],
@@ -179,12 +188,13 @@ def counter_offer(
     competing_total: int | None = None,
     previous_ask_total: int | None = None,
     maximum_offered: bool = False,
+    previous_ask: int | None = None,
 ) -> dict[str, Any]:
-    """What to ask for in negotiation round `round_no` (1-based), from the call's price plan.
+    """What to ask for in bargaining round `round_no` (1-based), given the vendor's current rate.
 
-    Within our maximum (plus tolerance): accept. Above it: say the maximum once ("हम मैक्सिमम इतना कर
-    सकते हैं"), then accept whatever they settle on (the family sees it against their budget).
-    competing_total and previous_ask_total are kept for callers; the plan decides.
+    Within our maximum (plus tolerance): accept. Above it: ask for about 10% below their quote, as a
+    round figure (700 -> 650, 800 -> 700), for up to NEGOTIATION_ROUNDS rounds; then accept their final
+    price, which the family sees against their budget. The other arguments are kept for callers.
     """
     stop = {"negotiate": False}
     if category not in NEGOTIABLE:
@@ -194,21 +204,20 @@ def counter_offer(
     rate = _rate(offer, plan["unit"], guests)
     if rate is None:
         return {**stop, "why": "No price yet."}
+    if rate <= plan["maximum"] + plan["tolerance"]:
+        return {**stop, "why": "Within what we can pay; accept it."}
     if round_no > NEGOTIATION_ROUNDS[category]:
         return {**stop, "why": "Enough rounds; accept their final price politely."}
-    tolerance = plan["tolerance"]
-    if maximum_offered:
-        # They've heard our maximum once; saying it again is haggling. The family sees their final price.
-        return {**stop, "why": "We already said our maximum; accept their final price politely."}
-    if rate <= plan["maximum"] + tolerance:
-        return {**stop, "why": "Within what we can pay; accept it."}  # simple: in range, accept
-    ask, reason = plan["maximum"], "maximum"
     unit = plan["unit"]
+    ask = _nice(rate * BARGAIN_SHARE, unit)
+    if ask >= rate or ask <= 0:
+        return {**stop, "why": "No meaningful discount left to ask for."}
+    if previous_ask is not None and ask >= previous_ask:
+        return {**stop, "why": "They held their price; asking the same figure again sounds robotic. Accept it."}
     asked_total = ask * guests if unit == "per_plate" else ask
     return {"negotiate": True, "ask": "lower_price", "price_amount": ask, "price_unit": unit,
             "asked_total": int(asked_total + (offer.get("transport_charge") or 0) + (offer.get("extra_charges_amount") or 0)),
-            "reason": reason,
-            "why": "This is the most the family can pay." if reason == "maximum" else "The family's budget is around this."}
+            "reason": "counter", "why": "Ask politely for a little less."}
 
 
 def savings(quote: dict[str, Any], brief: dict[str, Any]) -> int | None:

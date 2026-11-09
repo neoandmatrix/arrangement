@@ -183,8 +183,7 @@ class HighPriceRightAwayTest(unittest.IsolatedAsyncioTestCase):
             await conversation.run_conversation(transport, cfg, sample_rate_in=16000, sample_rate_out=24000)
         self.assertIn("ठीक से सुना नहीं", notes[0])  # spoken by code, word for word
         self.assertIn("बहुत हाई", notes[1])
-        self.assertIn("मैक्सिमम 620 रुपये पर प्लेट", notes[1])  # budget 25000 for 40 guests
-        self.assertIsNone(notes[2])  # a normal rate gets no push-back
+        self.assertEqual(notes[2], "ठीक है सर, 550 रुपये पर प्लेट फाइनल।")  # in range after the push-back: settled out loud
 
 
 class FunctionDetailsTest(unittest.IsolatedAsyncioTestCase):
@@ -311,9 +310,196 @@ class BargainNowTest(FunctionDetailsTest):
             await conversation.run_conversation(transport, cfg, sample_rate_in=16000, sample_rate_out=24000)
         return spoken[0]
 
-    async def test_above_our_maximum_mohan_says_it_right_away(self):
-        said = await self.run_hook("40 guest हैं ना, तो per plate होगा आपका 1200 रुपये।")  # budget 25000 / 40 = 620 max
-        self.assertEqual(said, "सर, हम मैक्सिमम 620 रुपये पर प्लेट तक कर सकते हैं, इतने में हो जाएगा?")
+    async def test_above_range_mohan_counters_right_away(self):
+        said = await self.run_hook("40 guest हैं ना, तो per plate होगा आपका 700 रुपये।")  # 620 max + 60
+        self.assertEqual(said, "सर, 650 रुपये पर प्लेट कर दीजिए, हो जाएगा?")
 
     async def test_in_range_is_just_accepted(self):
         self.assertIsNone(await self.run_hook("600 रुपये पर प्लेट"))
+
+
+class BargainFlowTest(BargainNowTest):
+    """From a live call: after "650 कर दीजिए", "नहीं, 700 करिए" must be settled, not met with "620 तक" forever."""
+
+    test_above_range_mohan_counters_right_away = None
+    test_in_range_is_just_accepted = None
+
+    async def run_script(self, lines):
+        hooks, captured, spoken = [], {}, []
+
+        class Pair:
+            def __init__(self, context, **kwargs):
+                captured["context"] = context
+
+            def user(self):
+                return DummyProcessor()
+
+            def assistant(self):
+                return DummyProcessor()
+
+        def before_reply(*given):
+            hooks.extend(given)
+            return DummyProcessor()
+
+        class Runner:
+            def __init__(self, **kwargs):
+                pass
+
+            async def run(self, task):
+                context, mohan = captured["context"], "पर प्लेट रेट कितना होगा?"
+                for vendor in lines:
+                    context.add_message({"role": "assistant", "content": mohan})
+                    context.add_message({"role": "user", "content": vendor})
+                    frames = hooks[1]() or []
+                    mohan = next((f.text for f in frames if hasattr(f, "text")), None) or "next question"
+                    spoken.append(mohan)
+
+        transport = SimpleNamespace(input=lambda: DummyProcessor(), output=lambda: DummyProcessor(),
+                                    event_handler=lambda name: lambda callback: callback)
+        cfg = conversation.SessionConfig(mode="vendor_call", channel="app", vendor_id="C06",
+                                         event_id=self.event_id, call_id="synthetic-flow")
+        with patch.dict("os.environ", {"GNANI_API_KEY": "synthetic-test-key", "SUPERVISOR": "0"}), \
+             patch("conversation.GnaniSTTService", return_value=DummyProcessor()), \
+             patch("conversation.GnaniTTSService", return_value=DummyProcessor()), \
+             patch("conversation.make_llm", return_value=FakeLLM()), \
+             patch("conversation.SileroVADAnalyzer"), \
+             patch("conversation.LLMContextAggregatorPair", Pair), \
+             patch("conversation.BeforeReply", before_reply), \
+             patch("conversation.WorkerRunner", Runner):
+            await conversation.run_conversation(transport, cfg, sample_rate_in=16000, sample_rate_out=24000)
+        return spoken
+
+    async def test_the_live_call_now_settles_on_their_counter(self):
+        spoken = await self.run_script(["2800", "2800", "700 कर सकते हैं आप?", "नहीं, 700 करिए, 700 में हो जाएगा।"])
+        self.assertIn("ठीक से सुना नहीं", spoken[0])
+        self.assertIn("बहुत हाई", spoken[1])
+        self.assertEqual(spoken[2], "सर, 650 रुपये पर प्लेट कर दीजिए, हो जाएगा?")
+        self.assertEqual(spoken[3], "ठीक है सर, 700 रुपये पर प्लेट फाइनल।")
+
+
+class BargainFlowFixesTest(BargainFlowTest):
+    """From a live call: 2800 caught late, "900 में हो जाएगा" countered with 800, and the confirmed quote never saved."""
+
+    test_the_live_call_now_settles_on_their_counter = None
+
+    async def test_rate_in_another_clause_is_caught_right_away(self):
+        spoken = await self.run_script(["खाना पर plate rate होगा आपका कुछ, यही 2800 रुपये।"])
+        self.assertIn("ठीक से सुना नहीं", spoken[0])
+
+    async def test_agreeing_to_our_counter_settles_it(self):
+        spoken = await self.run_script(["1000 रुपये पर प्लेट।", "900 में हो जाएगा।"])
+        self.assertEqual(spoken, ["सर, 900 रुपये पर प्लेट कर दीजिए, हो जाएगा?", "ठीक है सर, 900 रुपये पर प्लेट फाइनल।"])
+        spoken = await self.run_script(["800", "हाँ ठीक है, हो जाएगा"])
+        self.assertEqual(spoken[1], "ठीक है सर, 700 रुपये पर प्लेट फाइनल।")
+
+    def test_readback_and_agreement_helpers(self):
+        self.assertTrue(conversation.amount_in_readback("तो 800 रुपये पर प्लेट, ट्रांसपोर्ट 2000 रुपये, सही है?"))
+        self.assertFalse(conversation.amount_in_readback("ट्रांसपोर्ट का कोई चार्ज है क्या?"))
+        self.assertTrue(conversation.agrees("हाँ ठीक है, हो जाएगा"))
+        self.assertFalse(conversation.agrees("नहीं, 700 करिए"))
+
+
+class SecondMessageTest(BargainFlowTest):
+    """From a live call: "3500" then "और delivery लेगा?" before the counter was heard made code settle at 3500."""
+
+    test_the_live_call_now_settles_on_their_counter = None
+
+    async def test_an_old_message_is_not_read_again(self):
+        hooks, captured, spoken = [], {}, []
+
+        class Pair:
+            def __init__(self, context, **kwargs):
+                captured["context"] = context
+
+            def user(self):
+                return DummyProcessor()
+
+            def assistant(self):
+                return DummyProcessor()
+
+        def before_reply(*given):
+            hooks.extend(given)
+            return DummyProcessor()
+
+        class Runner:
+            def __init__(self, **kwargs):
+                pass
+
+            async def run(self, task):
+                context = captured["context"]
+                context.add_message({"role": "assistant", "content": "पर प्लेट रेट कितना होगा?"})
+                for vendor in ["800 रुपये पर प्लेट", "और delivery लेगा?"]:  # the counter isn't in the context yet
+                    context.add_message({"role": "user", "content": vendor})
+                    frames = hooks[1]() or []
+                    spoken.append(next((f.text for f in frames if hasattr(f, "text")), None))
+
+        transport = SimpleNamespace(input=lambda: DummyProcessor(), output=lambda: DummyProcessor(),
+                                    event_handler=lambda name: lambda callback: callback)
+        cfg = conversation.SessionConfig(mode="vendor_call", channel="app", vendor_id="C06",
+                                         event_id=self.event_id, call_id="synthetic-second")
+        with patch.dict("os.environ", {"GNANI_API_KEY": "synthetic-test-key", "SUPERVISOR": "0"}), \
+             patch("conversation.GnaniSTTService", return_value=DummyProcessor()), \
+             patch("conversation.GnaniTTSService", return_value=DummyProcessor()), \
+             patch("conversation.make_llm", return_value=FakeLLM()), \
+             patch("conversation.SileroVADAnalyzer"), \
+             patch("conversation.LLMContextAggregatorPair", Pair), \
+             patch("conversation.BeforeReply", before_reply), \
+             patch("conversation.WorkerRunner", Runner):
+            await conversation.run_conversation(transport, cfg, sample_rate_in=16000, sample_rate_out=24000)
+        self.assertEqual(spoken, ["सर, 700 रुपये पर प्लेट कर दीजिए, हो जाएगा?", None])
+
+
+class TimingTest(FunctionDetailsTest):
+    """From a live call: "cake कितने बजे देना है?" was ignored four times."""
+
+    test_the_vendor_questions_from_the_call_are_recognised = None
+    test_details_line_and_prompt = None
+    test_code_answers_with_the_details_and_asks_the_rate = None
+
+    def setUp(self):
+        super().setUp()
+        self.event_id = store.save_event(prompts.SAMPLE_NAAMKARAN)
+
+    async def test_code_answers_the_time_and_repeats_the_pending_question(self):
+        hooks, captured, spoken = [], {}, []
+
+        class Pair:
+            def __init__(self, context, **kwargs):
+                captured["context"] = context
+
+            def user(self):
+                return DummyProcessor()
+
+            def assistant(self):
+                return DummyProcessor()
+
+        def before_reply(*given):
+            hooks.extend(given)
+            return DummyProcessor()
+
+        class Runner:
+            def __init__(self, **kwargs):
+                pass
+
+            async def run(self, task):
+                context = captured["context"]
+                context.add_message({"role": "assistant", "content": "क्या आप दो किलो एगलेस चॉकलेट केक बना पाएंगे?"})
+                context.add_message({"role": "user", "content": "कब देना है cake? कितने बजे देना है?"})
+                frames = hooks[3]()  # [start_review, high_price_hint, function_details_hint, timing_hint]
+                spoken.append(frames[0].text if frames else None)
+
+        transport = SimpleNamespace(input=lambda: DummyProcessor(), output=lambda: DummyProcessor(),
+                                    event_handler=lambda name: lambda callback: callback)
+        cfg = conversation.SessionConfig(mode="vendor_call", channel="app", vendor_id="K02",
+                                         event_id=self.event_id, call_id="synthetic-timing")
+        with patch.dict("os.environ", {"GNANI_API_KEY": "synthetic-test-key", "SUPERVISOR": "0"}), \
+             patch("conversation.GnaniSTTService", return_value=DummyProcessor()), \
+             patch("conversation.GnaniTTSService", return_value=DummyProcessor()), \
+             patch("conversation.make_llm", return_value=FakeLLM()), \
+             patch("conversation.SileroVADAnalyzer"), \
+             patch("conversation.LLMContextAggregatorPair", Pair), \
+             patch("conversation.BeforeReply", before_reply), \
+             patch("conversation.WorkerRunner", Runner):
+            await conversation.run_conversation(transport, cfg, sample_rate_in=16000, sample_rate_out=24000)
+        self.assertEqual(spoken[0], "फंक्शन 22 नवंबर को है, मुहूर्त सुबह 10 बजे का है, केक सुबह 8 बजे तक चाहिए। "
+                                    "क्या आप दो किलो एगलेस चॉकलेट केक बना पाएंगे?")

@@ -217,6 +217,46 @@ def scope_line(category: str, brief: dict[str, Any]) -> tuple[str, str]:
     return head, head_en
 
 
+_MONTHS_HI = ["जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"]
+# When each service must be ready, in minutes before the muhurat (as the call checklists ask).
+_LEAD_MINUTES = {"cake": 120, "decorator": 180, "tent_sound": 240, "photographer": 30, "caterer": 0, "priest": 0}
+_READY_HI = {"cake": "केक {t} तक चाहिए", "decorator": "सेटअप {t} तक हो जाना चाहिए", "tent_sound": "टेंट और साउंड {t} तक लग जाना चाहिए",
+             "photographer": "आपको {t} तक आना है", "caterer": "खाना पूजा के बाद, मुहूर्त के आसपास चाहिए", "priest": "पूजा {t} से शुरू होगी"}
+_READY_EN = {"cake": "we need the cake by {t}", "decorator": "setup should be done by {t}", "tent_sound": "the tent and sound should be up by {t}",
+             "photographer": "please come by {t}", "caterer": "the meal is after the puja, around the muhurat", "priest": "the puja starts at {t}"}
+
+
+def _clock_hi(minutes: int) -> str:
+    """"सुबह 8 बजे", "सुबह साढ़े 7 बजे": how people say a time on the phone."""
+    minutes %= 24 * 60
+    hour, minute = divmod(minutes, 60)
+    part = "सुबह" if hour < 12 else "दोपहर" if hour < 16 else "शाम" if hour < 19 else "रात"
+    twelve = hour % 12 or 12
+    if minute == 30:
+        return f"{part} साढ़े {twelve} बजे"
+    if minute == 0:
+        return f"{part} {twelve} बजे"
+    return f"{part} {twelve}:{minute:02d} बजे"
+
+
+def _clock_en(minutes: int) -> str:
+    minutes %= 24 * 60
+    hour, minute = divmod(minutes, 60)
+    return f"{hour % 12 or 12}:{minute:02d} {'am' if hour < 12 else 'pm'}"
+
+
+def timing_line(category: str, brief: dict[str, Any]) -> tuple[str, str]:
+    """(Hinglish, English) answer to "कितने बजे / कब / मुहूर्त क्या है?": date, muhurat and this service's deadline."""
+    year, month, day = (int(x) for x in str(brief.get("date") or "2026-01-01").split("-"))
+    hh, mm = (int(x) for x in str(brief.get("start_time") or "08:00").split(":"))
+    muhurat = hh * 60 + mm
+    ready = muhurat - _LEAD_MINUTES.get(category, 0)
+    date_hi, date_en = f"{day} {_MONTHS_HI[month - 1]}", f"{day} {['January','February','March','April','May','June','July','August','September','October','November','December'][month - 1]}"
+    hi = f"फंक्शन {date_hi} को है, मुहूर्त {_clock_hi(muhurat)} का है, {_READY_HI[category].format(t=_clock_hi(ready))}।"
+    en = f"The function is on {date_en}, the muhurat is at {_clock_en(muhurat)}, and {_READY_EN[category].format(t=_clock_en(ready))}."
+    return hi, en
+
+
 def functions_for_prompt() -> str:
     """The function list as the intake prompt shows it."""
     lines = []
