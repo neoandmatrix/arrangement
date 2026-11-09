@@ -100,30 +100,29 @@ class NegotiationTest(unittest.TestCase):
     TIGHT = {**BRIEF, "budget": {"caterer": 18000}}
     OFFER = {"price_amount": 480, "price_unit": "per_plate", "transport_charge": 1000, "extra_charges_amount": 0}
 
-    def test_over_budget_opens_near_budget_then_meets_halfway_then_stops(self):
-        r1 = rules.counter_offer("caterer", self.OFFER, self.TIGHT, round_no=1, competing_total=None)
-        self.assertEqual((r1["price_amount"], r1["reason"]), (420, "budget"))  # (18000 - 1000) / 40, rounded down
-        r2 = rules.counter_offer(
-            "caterer", {**self.OFFER, "price_amount": 450}, self.TIGHT,
-            round_no=2, competing_total=None, previous_ask_total=r1["asked_total"],
-        )
-        self.assertEqual(r2["price_amount"], 430)  # halfway between our ask and their 450
-        r3 = rules.counter_offer("caterer", self.OFFER, self.TIGHT, round_no=3, competing_total=None)
-        self.assertFalse(r3["negotiate"])
+    def test_price_plan_is_fixed_from_the_budget(self):
+        plan = rules.price_plan("caterer", self.TIGHT)  # 18000 for 40 guests = 450 a plate
+        self.assertEqual(plan, {"unit": "per_plate", "expected": 380, "maximum": 450, "tolerance": 40})  # 10%, to 10s
+        self.assertEqual(rules.price_plan("decorator", {"guests": 40, "budget": {"decorator": 12000}})["tolerance"], 1200)
+        self.assertEqual(rules.price_plan("cake", {"guests": 40, "budget": {"cake": 1500}})["tolerance"], 200)  # floor
+        self.assertEqual(rules.price_plan("cake", {"guests": 40})["maximum"], 2800)  # typical 2400 + 20%, no budget
 
-    def test_never_opens_lower_than_fifteen_percent_off(self):
-        tiny_budget = {**BRIEF, "budget": {"caterer": 5000}}
-        r = rules.counter_offer("caterer", self.OFFER, tiny_budget, round_no=1, competing_total=None)
-        self.assertGreaterEqual(r["asked_total"], int(rules.landed_cost(self.OFFER, BRIEF) * 0.85) - 400)
+    def test_above_our_maximum_we_say_the_maximum(self):
+        r = rules.counter_offer("caterer", {**self.OFFER, "price_amount": 600}, self.TIGHT, round_no=1)
+        self.assertEqual((r["reason"], r["price_amount"], r["price_unit"]), ("maximum", 450, "per_plate"))
 
-    def test_under_budget_asks_once_to_include_transport(self):
-        r1 = rules.counter_offer("caterer", self.OFFER, BRIEF, round_no=1, competing_total=None)
-        self.assertEqual(r1["ask"], "waive_transport")
-        self.assertFalse(rules.counter_offer("caterer", self.OFFER, BRIEF, round_no=2, competing_total=None)["negotiate"])
+    def test_within_our_maximum_is_accepted(self):
+        for rate in (300, 420, 480, 490):  # up to 450 + 40
+            self.assertFalse(rules.counter_offer("caterer", {**self.OFFER, "price_amount": rate}, self.TIGHT, round_no=1)["negotiate"], rate)
+        self.assertTrue(rules.counter_offer("caterer", {**self.OFFER, "price_amount": 500}, self.TIGHT, round_no=1)["negotiate"])
 
-    def test_cites_a_real_cheaper_quote(self):
-        r = rules.counter_offer("caterer", self.OFFER, BRIEF, round_no=1, competing_total=19000)
-        self.assertEqual((r["reason"], r["price_amount"]), ("competing_quote", 450))
+    def test_once_the_maximum_was_said_we_stop_haggling(self):
+        r = rules.counter_offer("caterer", {**self.OFFER, "price_amount": 700}, self.TIGHT, round_no=1, maximum_offered=True)
+        self.assertFalse(r["negotiate"])
+
+    def test_a_caterers_total_quote_is_compared_per_plate(self):
+        r = rules.counter_offer("caterer", {**self.OFFER, "price_amount": 24000, "price_unit": "total"}, self.TIGHT, round_no=1)
+        self.assertEqual((r["reason"], r["price_amount"]), ("maximum", 450))  # 24000 / 40 = 600 a plate
 
     def test_competitor_total_ignores_unverified_and_unavailable_quotes(self):
         quotes = [

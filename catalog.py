@@ -114,7 +114,10 @@ def checklist(category: str, brief: dict[str, Any]) -> list[str]:
     function = function_of(brief) or FUNCTIONS["griha_pravesh"]
     label = function_label(brief)
     wish = (brief.get("details") or {}).get(category)
-    wanted = f" (the family wants: {wish})" if wish else ""
+    # The family's wish is its own plain yes/no question. Folded into another question it came out
+    # as "with three hours of photos and video, how many hours will you cover?", which confused vendors.
+    can_do = ([f"whether they can do what the family wants: {wish}. Say it plainly in one short sentence and ask "
+               "if they can do that; don't turn it into a how-many question"] if wish else [])
     return {
         "priest": [
             "whether they are free on the date at the muhurat time",
@@ -128,41 +131,90 @@ def checklist(category: str, brief: dict[str, Any]) -> list[str]:
             "whether they are available on the date, and can serve before the muhurat ends",
             "whether they can make the food the family wants",
             "price per plate for the number of guests",
-            "transport, serving staff or any other extra charges",
+            "the transport charge",
+            "any other extra charge, like serving staff",
             "whether GST is included",
             "how much advance they need",
         ],
         "decorator": [
             "whether they are available on the date, setting up at least three hours before the muhurat",
-            f"what their {label} decoration package includes ({function['decoration']}){wanted}",
+            *(can_do or [f"what their {label} decoration package includes (usually {function['decoration']})"]),
             "the package price",
-            "transport or any other extra charges",
+            "the transport charge",
+            "any other extra charge, like materials",
             "how much advance they need",
         ],
         "cake": [
             "whether they can deliver on the date, at least two hours before the muhurat",
-            f"whether they can make the cake the family wants{wanted}",
+            *(can_do or [f"what cake they would suggest for a {label}"]),
             "the price of the cake",
             "the delivery charge",
+            "any other extra charge",
             "how much advance they need",
         ],
         "photographer": [
             "whether they are free on the date, from half an hour before the muhurat",
-            f"how many hours they cover, and whether that includes photos and video{wanted}",
+            *(can_do or ["whether they do both photos and video", "how many hours they cover"]),
             "when the photos and video will be delivered",
             "their price",
             "any travel charge",
+            "any other extra charge, like extra hours or prints",
             "how much advance they need",
         ],
         "tent_sound": [
             "whether they are free on the date, setting up at least four hours before the muhurat",
-            f"what they would set up for the number of guests: tent size, chairs and sound system{wanted}",
+            *(can_do or ["what they would set up for the number of guests: tent size, chairs and sound system"]),
             "whether setup and removal afterwards are included",
             "their price",
             "the transport charge",
+            "any other extra charge",
             "how much advance they need",
         ],
     }[category]
+
+
+# What a vendor asks before quoting ("कितना बड़ा function है, कहाँ है, क्या सजाना है?"), answered by a fixed
+# line built from the brief, so the model never has to make it up and never dodges with "what's your rate?".
+_VENUE = {"griha_pravesh": ("नए घर पर", "at the new house"), "puja": ("घर पर", "at home"),
+          "baby_ceremony": ("घर पर", "at home")}
+_PUJA_HI = {"griha_pravesh": "गृह प्रवेश की पूजा", "puja": "घर पर पूजा", "baby_ceremony": "बच्चे के संस्कार की पूजा"}
+_DECORATION_HI = {"griha_pravesh": "मेन डोर पर तोरण, गेंदे के फूल और रंगोली",
+                  "puja": "पूजा की जगह और मंडप पर फूलों की सजावट",
+                  "baby_ceremony": "पालने की सजावट, फूल और बैलून"}
+
+
+def _size(guests: int) -> tuple[str, str]:
+    if guests <= 25:
+        return "छोटा फंक्शन", "a small function"
+    if guests <= 100:
+        return "मीडियम साइज़ का फंक्शन", "a medium-sized function"
+    return "बड़ा फंक्शन", "a big function"
+
+
+def scope_line(category: str, brief: dict[str, Any]) -> tuple[str, str]:
+    """(Hinglish line, English meaning) describing the job: size, guests, place, what's needed."""
+    key = brief.get("function_type") if brief.get("function_type") in FUNCTIONS else "griha_pravesh"
+    guests = int(brief.get("guests") or 0)
+    size, size_en = _size(guests)
+    venue, venue_en = _VENUE[key]
+    morning = str(brief.get("start_time") or "08:00") < "12:00"
+    wish = ((brief.get("details") or {}).get(category) or "").strip()
+    head, head_en = f"{size} है, लगभग {guests} गेस्ट, {venue}", f"It's {size_en}, about {guests} guests, {venue_en}"
+    if category == "decorator":
+        what, what_en = _DECORATION_HI[key], FUNCTIONS[key]["decoration"]
+        return f"{head}। {what} चाहिए", f"{head_en}. We need {wish or what_en}"
+    if category == "tent_sound":
+        place, place_en = ("टेरेस पर", "on the terrace") if "terrace" in wish.lower() else ("घर के पास खुले मैदान में", "in an open ground near the house")
+        return (f"{head}। {place} शामियाना, {guests} कुर्सियाँ और छोटा साउंड सिस्टम चाहिए",
+                f"{head_en}. We need a shamiana {place_en}, {guests} chairs and a small sound system")
+    if category == "caterer":
+        meal, meal_en = ("सुबह पूजा के बाद खाना", "a meal after the morning puja") if morning else ("पूजा के बाद खाना", "a meal after the puja")
+        return f"{head}, {meal}", f"{head_en}, {meal_en}"
+    if category == "photographer":
+        return f"{head}, पूजा और फंक्शन की फोटो और वीडियो चाहिए", f"{head_en}; we need photos and video of the puja and function"
+    if category == "priest":
+        return f"{_PUJA_HI[key]} है, {venue}, लगभग {guests} गेस्ट", f"The puja is {function_label(brief)}, {venue_en}, about {guests} guests"
+    return head, head_en
 
 
 def functions_for_prompt() -> str:

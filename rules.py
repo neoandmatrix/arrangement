@@ -89,7 +89,8 @@ def landed_cost(quote: dict[str, Any], brief: dict[str, Any]) -> int | None:
         return None
     base = price * int(brief.get("guests") or 0) if quote.get("price_unit") == "per_plate" else price
     extras = (quote.get("transport_charge") or 0) + (quote.get("extra_charges_amount") or 0)
-    return int(base + extras)
+    gst = base * quote["gst_percent"] / 100 if quote.get("gst_included") is False and quote.get("gst_percent") in price_safety.GST_RATES else 0
+    return int(round(base + gst + extras))
 
 
 def update_problems(data: dict[str, Any], quote: dict[str, Any] | None, vendor_said: str) -> list[str]:
@@ -133,80 +134,81 @@ def _round_down(amount: float, price_unit: str) -> int:
     return int(amount // step * step)
 
 
+# Usual rates when the family gave no budget: per plate for caterers, the whole job otherwise.
+TYPICAL_RATES = {"priest": 11000, "caterer": 450, "decorator": 15000, "cake": 2400, "photographer": 18000, "tent_sound": 22000}
+# A vendor this close to our figure counts as agreeing to it: 10% of our maximum, at least these rupees.
+PRICE_TOLERANCE_SHARE = 0.10
+PRICE_TOLERANCE = {"per_plate": 20, "total": 200}
+EXPECTED_SHARE = 0.85  # we open at about 85% of what we can pay at most
+
+
+def price_plan(category: str, brief: dict[str, Any]) -> dict[str, Any]:
+    """The figures Mohan works with on a call, fixed before it starts.
+
+    expected: what we hope to pay and say first if asked; maximum: the most we can do (the family's
+    budget, per plate for caterers). Mohan never offers above the maximum.
+    """
+    unit = "per_plate" if category == "caterer" else "total"
+    guests = max(int(brief.get("guests") or 1), 1)
+    budget = (brief.get("budget") or {}).get(category)
+    if budget:
+        maximum = _round_down(budget / guests if unit == "per_plate" else budget, unit)
+    else:
+        maximum = _round_down(TYPICAL_RATES.get(category, 0) * 1.2, unit)
+    expected = _round_down(maximum * EXPECTED_SHARE, unit)
+    tolerance = max(PRICE_TOLERANCE[unit], _round_down(maximum * PRICE_TOLERANCE_SHARE, unit))
+    return {"unit": unit, "expected": expected, "maximum": maximum, "tolerance": tolerance}
+
+
+def _rate(offer: dict[str, Any], unit: str, guests: int) -> float | None:
+    """The vendor's base price in the plan's unit (a caterer's total quote becomes per plate)."""
+    price = offer.get("price_amount")
+    if type(price) is not int:
+        return None
+    if offer.get("price_unit") == "total" and unit == "per_plate":
+        return price / guests
+    return price
+
+
 def counter_offer(
     category: str,
     offer: dict[str, Any],
     brief: dict[str, Any],
     *,
     round_no: int,
-    competing_total: int | None,
+    competing_total: int | None = None,
     previous_ask_total: int | None = None,
+    maximum_offered: bool = False,
 ) -> dict[str, Any]:
-    """What to ask for in negotiation round `round_no` (1-based), given the vendor's current offer.
+    """What to ask for in negotiation round `round_no` (1-based), from the call's price plan.
 
-    Returns {"negotiate": False, ...} when we should accept, or a counter-offer with a truthful
-    reason. The counter is expressed in the vendor's own unit (per plate or total).
+    Within our maximum (plus tolerance): accept. Above it: say the maximum once ("हम मैक्सिमम इतना कर
+    सकते हैं"), then accept whatever they settle on (the family sees it against their budget).
+    competing_total and previous_ask_total are kept for callers; the plan decides.
     """
     stop = {"negotiate": False}
     if category not in NEGOTIABLE:
         return {**stop, "why": f"We don't negotiate with a {category}."}
-    total = landed_cost(offer, brief)
-    if total is None:
+    plan = price_plan(category, brief)
+    guests = max(int(brief.get("guests") or 1), 1)
+    rate = _rate(offer, plan["unit"], guests)
+    if rate is None:
         return {**stop, "why": "No price yet."}
     if round_no > NEGOTIATION_ROUNDS[category]:
         return {**stop, "why": "Enough rounds; accept their final price politely."}
-
-    budget = (brief.get("budget") or {}).get(category)
-    targets = [t for t in (budget, competing_total) if t]
-    target = min(targets) if targets else None
-    unit = offer.get("price_unit") or "total"
-    guests = int(brief.get("guests") or 1)
-    extras = (offer.get("transport_charge") or 0) + (offer.get("extra_charges_amount") or 0)
-
-    if target is None or total <= target:
-        # Already fine: one gentle ask, then accept.
-        if round_no > 1:
-            return {**stop, "why": "The price is within budget; accept it."}
-        if offer.get("transport_charge"):
-            return {
-                "negotiate": True,
-                "ask": "waive_transport",
-                "transport_charge": 0,
-                "why": "A small courtesy: ask if they can include transport.",
-            }
-        ask_total = total * GENTLE_ASK_SHARE
-        reason = "small_discount"
-    else:
-        floor = total * FIRST_ASK_SHARE
-        if round_no == 1:
-            ask_total = max(target, floor)
-        else:
-            # Meet them halfway between our last ask and their new offer.
-            ask_total = max(target, ((previous_ask_total or floor) + total) / 2)
-        reason = "competing_quote" if competing_total and competing_total == target else "budget"
-
-    base = ask_total - extras
-    price = _round_down(base / guests if unit == "per_plate" else base, unit)
-    if price < 0:
-        return {**stop, "why": "The extras leave no valid base counter-offer; clarify the charges instead."}
-    if price >= (offer.get("price_amount") or 0):
-        return {**stop, "why": "No meaningful discount left to ask for."}
-    asked_total = price * guests + extras if unit == "per_plate" else price + extras
-    result = {
-        "negotiate": True,
-        "ask": "lower_price",
-        "price_amount": price,
-        "price_unit": unit,
-        "asked_total": int(asked_total),
-        "reason": reason,
-    }
-    if reason == "budget":
-        result["why"] = f"The family's budget for this is about ₹{target}."
-    elif reason == "competing_quote":
-        result["why"] = f"We have another quote of about ₹{target} in total."
-    else:
-        result["why"] = "Ask politely if they can do a little better."
-    return result
+    tolerance = plan["tolerance"]
+    if maximum_offered:
+        # They've heard our maximum once; saying it again is haggling. The family sees their final price.
+        return {**stop, "why": "We already said our maximum; accept their final price politely."}
+    if rate <= plan["maximum"] + tolerance:
+        return {**stop, "why": "Within what we can pay; accept it."}  # simple: in range, accept
+    ask, reason = plan["maximum"], "maximum"
+    unit = plan["unit"]
+    asked_total = ask * guests if unit == "per_plate" else ask
+    return {"negotiate": True, "ask": "lower_price", "price_amount": ask, "price_unit": unit,
+            "asked_total": int(asked_total + (offer.get("transport_charge") or 0) + (offer.get("extra_charges_amount") or 0)),
+            "reason": reason,
+            "why": "This is the most the family can pay." if reason == "maximum" else "The family's budget is around this."}
 
 
 def savings(quote: dict[str, Any], brief: dict[str, Any]) -> int | None:

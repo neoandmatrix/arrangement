@@ -25,3 +25,8 @@ firebase-service-account*.json
 
 AGENTS.md
 CLAUDE.md
+
+# Web demo: its database and call recordings
+demo*.db
+demo_recordings/
+voice_cache/

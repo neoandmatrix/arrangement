@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#b5481d">
+<title>Bandobast demo</title>
+<meta name="description" content="Bandobast calls vendors in their language and bargains for your family function. Try it as a family or as a vendor.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #faf6ef; --card: #ffffff; --ink: #24170f; --muted: #6f6257; --line: #eadfce; --chip: #f4ece0;
+    --accent: #b5481d; --accent-ink: #ffffff; --gold: #e9a92e; --ok: #2f7d4f; --warn: #a36a00; --bad: #b42318;
+    --me: #fbeee3; --them: #eef3ee; --shadow: 0 1px 2px rgba(60,30,10,.06), 0 6px 20px rgba(60,30,10,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17120e; --card: #221b15; --ink: #f3ebe1; --muted: #b0a394; --line: #3a3027; --chip: #2d241c;
+      --accent: #e0703f; --accent-ink: #1a110b; --gold: #f2b84a; --ok: #5cbf86; --warn: #e2a33a; --bad: #f07067;
+      --me: #3a271b; --them: #1f2c22; --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17120e; --card: #221b15; --ink: #f3ebe1; --muted: #b0a394; --line: #3a3027; --chip: #2d241c;
+    --accent: #e0703f; --accent-ink: #1a110b; --gold: #f2b84a; --ok: #5cbf86; --warn: #e2a33a; --bad: #f07067;
+    --me: #3a271b; --them: #1f2c22; --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+  p { margin: 8px 0; }
+
+  /* One centred column for everything */
+  header, main { width: 100%; max-width: 680px; margin: 0 auto;
+                 padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+  header { padding-top: max(28px, env(safe-area-inset-top)); padding-bottom: 4px; text-align: center;
+           display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  header .logo { width: 52px; height: 52px; border-radius: 16px; background: var(--accent); color: var(--accent-ink);
+                 display: grid; place-items: center; font-weight: 800; font-size: 26px; box-shadow: var(--shadow); }
+  header h1 { font-size: 26px; margin: 4px 0 0; letter-spacing: -.01em; }
+  header p { margin: 0; color: var(--muted); font-size: 15px; max-width: 34ch; text-wrap: balance; }
+  header button.link { margin-top: 4px; font-size: 14px; }
+  main { padding-top: 8px; padding-bottom: max(64px, env(safe-area-inset-bottom)); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin: 14px 0; box-shadow: var(--shadow); }
+  .card > h2:first-child, .card > h3:first-child { text-align: center; }
+  .hero { text-align: center; }
+  .hero > p { max-width: 52ch; margin-left: auto; margin-right: auto; text-wrap: pretty; }
+  h2 { font-size: 20px; margin: 0 0 8px; text-wrap: balance; } h3 { font-size: 17px; margin: 0 0 6px; text-wrap: balance; }
+  .muted { color: var(--muted); } .small { font-size: 13px; }
+  .center { text-align: center; }
+
+  .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 16px; }
+  .choice { text-align: center; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 16px;
+            padding: 20px 16px; cursor: pointer; font: inherit; display: flex; flex-direction: column; align-items: center; gap: 4px;
+            transition: border-color .15s, transform .15s; }
+  .choice:active { transform: scale(.99); }
+  .choice b { display: block; font-size: 18px; }
+  .choice .icon { font-size: 34px; line-height: 1.2; }
+  .choice .muted { font-size: 14px; }
+  @media (hover: hover) { .choice:hover { border-color: var(--accent); transform: translateY(-1px); } }
+
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  input, select { width: 100%; min-width: 0; font: inherit; font-size: 16px; min-height: 44px; padding: 9px 11px; border-radius: 10px;
+                  border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  input[type="date"], input[type="time"] { -webkit-appearance: none; appearance: none; display: block; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+  .grid2 > div { min-width: 0; }
+
+  button { font: inherit; border-radius: 12px; padding: 10px 16px; min-height: 44px; border: 1px solid var(--line); background: var(--chip);
+           color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.link { background: none; border: 0; color: var(--accent); padding: 4px 8px; min-height: 0; }
+  button:disabled { opacity: .5; cursor: default; }
+  #go { display: block; width: 100%; max-width: 320px; margin: 16px auto 0; }
+
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; margin-top: 12px; }
+  .service { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 10px 0; }
+  .service.on { border-color: var(--accent); }
+  .service .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .service .head input { width: 20px; height: 20px; min-height: 0; accent-color: var(--accent); flex: none; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: 12px; margin: 2px 4px 2px 0; }
+  .status { display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 600; margin: 10px 0 6px; text-align: center; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.live { background: var(--bad); animation: pulse 1.2s infinite; } .dot.ok { background: var(--ok); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .chat { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; max-height: min(420px, 55vh); overflow-y: auto;
+          -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 2px; }
+  .bubble { padding: 8px 12px; border-radius: 14px; max-width: 88%; overflow-wrap: anywhere; font-size: 15px; }
+  .bubble.b { background: var(--me); align-self: flex-start; border-bottom-left-radius: 4px; }
+  .bubble.v { background: var(--them); align-self: flex-end; border-bottom-right-radius: 4px; }
+  .bubble .who { font-size: 12px; color: var(--muted); display: block; }
+  .quote { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 12px 0; text-align: center; }
+  .quote div { background: var(--chip); border-radius: 12px; padding: 10px; }
+  .quote small { display: block; color: var(--muted); font-size: 12px; } .quote b { font-size: 19px; }
+  .card > p.small, .card > p.good, .card > p.warn, .card > p.muted { text-align: center; }
+  .good { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  audio { display: block; width: 100%; margin: 8px 0; }
+  .err { color: var(--bad); margin: 8px 0; text-align: center; }
+  .err:empty { display: none; }
+  .persona { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .persona:last-child { border-bottom: 0; }
+  .persona button { flex: none; }
+  .callbox { text-align: center; padding: 28px 16px; background: #5b2a12; color: #fff; border-radius: 16px; margin: 14px 0; }
+  .callbox .big { font-size: 32px; font-variant-numeric: tabular-nums; margin: 8px 0; }
+  .callbox button { background: rgba(255,255,255,.18); color: #fff; border: 0; margin: 4px; min-width: 110px; }
+  .callbox button.end { background: #c62828; }
+  .steps { margin: 12px auto 0; padding-left: 20px; color: var(--muted); font-size: 14px; max-width: 46ch; text-align: left; }
+  details summary { cursor: pointer; text-align: center; color: var(--accent); margin: 8px 0; }
+
+  @media (max-width: 520px) {
+    header { padding-top: max(20px, env(safe-area-inset-top)); }
+    header h1 { font-size: 23px; }
+    .card { padding: 16px; border-radius: 14px; }
+    .grid2 { grid-template-columns: 1fr; }
+    .row > button { flex: 1 1 100%; }
+    .persona { flex-direction: column; align-items: stretch; text-align: center; }
+    .persona button { width: 100%; }
+    .bubble { max-width: 92%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">ब</div>
+  <h1>Bandobast</h1><p>Calls vendors in their language and bargains for your family function</p>
+  <button class="link" id="home" hidden>← Start over</button>
+</header>
+<main id="app"></main>
+
+<script>
+const $app = document.getElementById("app");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const rupees = n => n == null ? "—" : "₹" + Number(n).toLocaleString("en-IN");
+let CONFIG = null, poll = null, call = null;
+
+async function api(path, options = {}) {
+  const res = await fetch("/demo/api" + path, { headers: { "content-type": "application/json" }, ...options });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || res.statusText);
+  return body;
+}
+
+function stop() { clearInterval(poll); poll = null; if (call) call.close("Call ended"); }
+
+document.getElementById("home").onclick = () => { stop(); history.pushState(null, "", "/demo"); landing(); };
+
+// Landing
+
+async function landing() {
+  document.getElementById("home").hidden = true;
+  $app.innerHTML = `<div class="card muted center">Loading…</div>`;
+  CONFIG = await api("/config");
+  $app.innerHTML = `
+    <div class="card hero">
+      <h2>Try it in two minutes</h2>
+      <p class="muted">Bandobast is a voice agent for arranging griha pravesh, pujas and baby ceremonies in Bengaluru. It phones caterers,
+      decorators and priests in their own language, collects quotes, bargains politely within your budget, and brings you the deals.</p>
+      <div class="choices">
+        <button class="choice" id="fam"><span class="icon">🏠</span><b>Try as a family</b>
+          <span class="muted">Fill a short form. Bandobast calls a simulated vendor (an AI with its own voice and a secret lowest price).
+          Follow the call live, hear the recording, then approve, reject or ask it to bargain again.</span></button>
+        <button class="choice" id="ven"><span class="icon">🧑‍🍳</span><b>Try as a vendor</b>
+          <span class="muted">You are the caterer or decorator. Accept a family's request and Bandobast calls you in the browser.
+          Quote a price and see how it negotiates. Use headphones.</span></button>
+      </div>
+      <p class="small muted" style="margin-top:12px">${CONFIG.calls_left_today} demo calls left today · each call uses real Gnani speech models
+      (Prisma speech-to-text, Timbre voices). All families and vendors are synthetic.</p>
+    </div>`;
+  document.getElementById("fam").onclick = familyForm;
+  document.getElementById("ven").onclick = vendorPick;
+}
+
+// Family
+
+function plusDays(n) { const d = new Date(Date.now() + n * 864e5); return d.toISOString().slice(0, 10); }
+
+function familyForm() {
+  document.getElementById("home").hidden = false;
+  const fn = CONFIG.functions;
+  $app.innerHTML = `
+    <div class="card">
+      <h2>Your function</h2>
+      <div class="grid2">
+        <div><label>Occasion</label><select id="ftype">${fn.map(f => `<option value="${f.key}">${esc(f.name)}</option>`).join("")}</select></div>
+        <div><label>Which one</label><select id="fvar"></select></div>
+        <div><label>Family name</label><input id="fname" value="Sharma" maxlength="40"></div>
+        <div><label>Area in Bengaluru</label><select id="farea">${CONFIG.areas.map(a => `<option>${esc(a)}</option>`).join("")}</select></div>
+        <div><label>Date</label><input id="fdate" type="date" value="${plusDays(10)}" min="${plusDays(1)}"></div>
+        <div><label>Muhurat (start time)</label><input id="ftime" type="time" value="08:00"></div>
+        <div><label>Guests</label><input id="fguests" type="number" min="5" max="1000" value="40"></div>
+        <div><label>Food</label><input id="fcuisine" value="South Indian vegetarian, no onion no garlic" maxlength="120"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>What should Bandobast arrange?</h2>
+      <p class="muted small">Pick up to ${CONFIG.max_services}. Bandobast calls one vendor for each, one after the other (about 2 minutes per call).</p>
+      <div id="services"></div>
+      <div class="err" id="ferr"></div>
+      <button class="primary" id="go">Start calling</button>
+    </div>`;
+  const ftype = document.getElementById("ftype"), fvar = document.getElementById("fvar");
+  const fillVariants = () => {
+    const f = fn.find(x => x.key === ftype.value);
+    fvar.innerHTML = Object.entries(f.variants).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  };
+  ftype.onchange = fillVariants; fillVariants();
+  const box = document.getElementById("services");
+  box.innerHTML = CONFIG.services.map(s => `
+    <div class="service" data-key="${s.key}">
+      <div class="head"><input type="checkbox" id="s_${s.key}" ${s.key === "caterer" ? "checked" : ""}>
+        <label for="s_${s.key}" style="margin:0;color:var(--ink);font-size:16px">${esc(s.name)}</label>
+        ${s.negotiable ? `<span class="chip">bargains</span>` : `<span class="chip">fixed rates, no bargaining</span>`}</div>
+      <div class="body" hidden>
+        <div class="grid2">
+          <div><label>Your budget (₹ total)</label><input type="number" min="500" step="500" class="budget"></div>
+          <div><label>Vendor to call</label><select class="vendor"><option>Loading…</option></select></div>
+        </div>
+        ${s.details_hint ? `<label>Details (${esc(s.details_hint)})</label><input class="details" maxlength="200">` : ""}
+      </div>
+    </div>`).join("");
+  const guests = document.getElementById("fguests");
+  const sync = async () => {
+    const area = document.getElementById("farea").value;
+    for (const el of box.querySelectorAll(".service")) {
+      const on = el.querySelector("input[type=checkbox]").checked;
+      el.classList.toggle("on", on);
+      el.querySelector(".body").hidden = !on;
+      const s = CONFIG.services.find(x => x.key === el.dataset.key);
+      const budget = el.querySelector(".budget");
+      if (!budget.dataset.touched) budget.value = s.key === "caterer" ? s.default_budget / 40 * (+guests.value || 40) : s.default_budget;
+      budget.oninput = () => budget.dataset.touched = 1;
+      if (s.key === "cake") { const d = el.querySelector(".details"); if (d && !d.value) d.value = "eggless chocolate, 2 kg"; }
+      if (on && el.dataset.area !== area) {
+        el.dataset.area = area;
+        const { vendors } = await api(`/shortlist?category=${s.key}&area=${encodeURIComponent(area)}`);
+        el.querySelector(".vendor").innerHTML = vendors.map(v =>
+          `<option value="${v.id}">${esc(v.name)} · speaks ${esc(v.language)}${v.distance_km != null ? ` · ${v.distance_km} km` : ""}</option>`).join("");
+      }
+    }
+  };
+  box.onchange = e => {
+    const checked = box.querySelectorAll("input[type=checkbox]:checked");
+    if (checked.length > CONFIG.max_services && e.target.type === "checkbox") e.target.checked = false;
+    sync();
+  };
+  document.getElementById("farea").onchange = sync;
+  guests.oninput = sync;
+  sync();
+  document.getElementById("go").onclick = async () => {
+    const err = document.getElementById("ferr"); err.textContent = "";
+    const services = {}, budget = {}, details = {};
+    for (const el of box.querySelectorAll(".service.on")) {
+      const k = el.dataset.key;
+      services[k] = el.querySelector(".vendor").value;
+      budget[k] = parseInt(el.querySelector(".budget").value) || 0;
+      const d = el.querySelector(".details"); if (d) details[k] = d.value;
+    }
+    if (!Object.keys(services).length) { err.textContent = "Pick at least one service."; return; }
+    const go = document.getElementById("go"); go.disabled = true; go.textContent = "Starting…";
+    try {
+      const { run_id } = await api("/family-runs", { method: "POST", body: JSON.stringify({
+        function_type: ftype.value, function_variant: fvar.value, family_name: document.getElementById("fname").value,
+        area: document.getElementById("farea").value, date: document.getElementById("fdate").value,
+        start_time: document.getElementById("ftime").value, guests: parseInt(guests.value) || 0,
+        cuisine: document.getElementById("fcuisine").value, services, budget, details }) });
+      history.pushState(null, "", `/demo?run=${run_id}`);
+      showRun(run_id);
+    } catch (e) { err.textContent = e.message; go.disabled = false; go.textContent = "Start calling"; }
+  };
+}
+
+const STATUS = {
+  waiting: ["", "Waiting for its turn"], ringing: ["live", "Ringing the vendor…"], in_call: ["live", "On the call now"],
+  done: ["ok", "Call finished"], failed: ["", "The call did not go through"],
+};
+
+function quoteHtml(q, service) {
+  if (!q) return `<p class="muted">No quote was recorded on this call${service.calls.at(-1)?.status === "done" ? " (the vendor may have been busy)" : ""}.</p>`;
+  if (!q.available) return `<p class="warn">The vendor is not available on that date.</p>`;
+  const unit = q.unit === "per_plate" ? " / plate" : "";
+  const vs = q.budget && q.landed_cost != null
+    ? (q.landed_cost <= q.budget ? `<span class="good">within your ${rupees(q.budget)} budget</span>` : `<span class="warn">${rupees(q.landed_cost - q.budget)} over your budget</span>`) : "";
+  return `
+    <div class="quote">
+      <div><small>Final price</small><b>${rupees(q.price)}${unit}</b></div>
+      ${q.opening_price && q.opening_price !== q.price ? `<div><small>They first asked</small><b><s>${rupees(q.opening_price)}${unit}</s></b></div>` : ""}
+      <div><small>You pay in total</small><b>${rupees(q.landed_cost)}</b></div>
+      ${q.savings ? `<div><small>Saved by bargaining</small><b class="good">${rupees(q.savings)}</b></div>` : ""}
+      <div><small>Advance</small><b>${rupees(q.advance)}</b></div>
+    </div>
+    <p class="small">${vs}${q.transport ? ` · transport ${rupees(q.transport)}` : ""}${q.extras ? ` · extras ${rupees(q.extras)} ${esc(q.extras_notes || "")}` : ""}${q.extras_at_actuals ? ` · plus ${esc(q.extras_notes || "some costs")} billed later at actual cost` : ""}${q.gst_included ? " · GST included" : q.gst_percent ? ` · plus GST ${q.gst_percent}% (in the total)` : ""}${q.includes ? ` · ${esc(q.includes)}` : ""}</p>
+    ${q.needs_recheck ? `<p class="warn small">Some amounts were unclear on the call; the app would recheck them before booking.</p>` : ""}`;
+}
+
+async function showRun(id) {
+  document.getElementById("home").hidden = false;
+  stop();
+  let lastHtml = "";
+  const draw = async () => {
+    let run;
+    try { run = await api(`/runs/${id}`); } catch (e) { $app.innerHTML = `<div class="card err">${esc(e.message)}</div>`; stop(); return; }
+    const html = `
+      <div class="card"><h2>${esc(run.label)}</h2>
+        <p class="muted">${esc(run.brief.family_name)} family · ${esc(run.brief.area)} · ${esc(run.brief.date)} at ${esc(run.brief.start_time)} · ${run.brief.guests} guests</p>
+        <p class="small muted">Mohan, Bandobast's calling agent, and the simulated vendor are two different men's voices. The vendor's lines below are what Bandobast <i>heard</i> through speech-to-text.</p></div>
+      ${run.services.map(s => {
+        const last = s.calls.at(-1);
+        const [dot, text] = STATUS[last.status];
+        const ahead = last.ahead ? ` · ${last.ahead} call${last.ahead > 1 ? "s" : ""} ahead` : "";
+        return `<div class="card">
+          <h3>${esc(s.name)} · ${esc(last.vendor.name)}</h3>
+          <p class="small muted">${esc(last.vendor.area)} · ★ ${last.vendor.rating} · speaks ${esc(last.vendor.language)}</p>
+          ${s.calls.map((c, i) => `
+            ${s.calls.length > 1 ? `<p class="small muted" style="margin:10px 0 0">${c.purpose === "renegotiation" ? "Second call: bargaining again" : "First call"}</p>` : ""}
+            <div class="status"><span class="dot ${STATUS[c.status][0]}"></span>${STATUS[c.status][1]}${c === last ? ahead : ""}</div>
+            ${c.transcript.length ? `<div class="chat">${c.transcript.map(t => `<div class="bubble ${t.who.startsWith("Mohan") ? "b" : "v"}"><span class="who">${esc(t.who)}</span>${esc(t.text)}</div>`).join("")}</div>` : ""}
+            ${c.recording ? `<audio controls preload="none" src="${c.recording}"></audio>` : ""}`).join("")}
+          ${s.busy ? "" : quoteHtml(s.quote, s)}
+          ${!s.busy && s.quote?.available ? (s.decision === "approved"
+              ? `<p class="good"><b>Approved.</b> In the app, Bandobast now calls ${esc(last.vendor.name)} to confirm these exact terms and schedules reminder calls before the day.</p>`
+              : s.decision === "rejected" ? `<p class="muted">Rejected. In the app, Bandobast moves on to the next vendor on the shortlist.</p>`
+              : `<div class="row">
+                  <button class="primary" data-act="approve" data-v="${s.vendor_id}">Approve</button>
+                  <button data-act="reject" data-v="${s.vendor_id}">Reject</button>
+                  ${s.quote.negotiable && !s.calls.some(c => c.purpose === "renegotiation") ? `<button data-act="renegotiate" data-v="${s.vendor_id}">Ask Bandobast to bargain again</button>` : ""}
+                </div>`) : ""}
+          <div class="err" data-err="${s.vendor_id}"></div>
+        </div>`;
+      }).join("")}`;
+    if (html !== lastHtml) {
+      const scroll = [...$app.querySelectorAll(".chat")].map(c => c.scrollHeight - c.scrollTop - c.clientHeight < 40);
+      // Keep existing players: a redraw (the next call's live transcript) must not stop a recording that is playing.
+      // Putting the same element back in the same task keeps it playing.
+      const players = new Map([...$app.querySelectorAll("audio")].map(a => [a.getAttribute("src"), a]));
+      $app.innerHTML = lastHtml = html;
+      $app.querySelectorAll("audio").forEach(a => { const old = players.get(a.getAttribute("src")); if (old) a.replaceWith(old); });
+      $app.querySelectorAll(".chat").forEach((c, i) => { if (scroll[i] !== false) c.scrollTop = c.scrollHeight; });
+      $app.querySelectorAll("button[data-act]").forEach(b => b.onclick = async () => {
+        b.disabled = true;
+        try { await api(`/runs/${id}/vendors/${b.dataset.v}/${b.dataset.act}`, { method: "POST" }); lastHtml = ""; await draw(); start(); }
+        catch (e) { $app.querySelector(`[data-err="${b.dataset.v}"]`).textContent = e.message; b.disabled = false; }
+      });
+    }
+    if (!run.running) { clearInterval(poll); poll = null; }
+  };
+  const start = () => { if (!poll) poll = setInterval(draw, 1500); };
+  await draw(); start();
+}
+
+// Vendor
+
+async function vendorPick() {
+  document.getElementById("home").hidden = false;
+  const { vendors } = await api("/vendor-personas");
+  $app.innerHTML = `<div class="card"><h2>Who are you today?</h2>
+    <p class="muted small">Pick a business to play. Bandobast will speak your language.</p>
+    ${vendors.map(v => `<div class="persona"><div><b>${esc(v.name)}</b><br><span class="small muted">${esc(v.service)} · ${esc(v.area)} · speaks ${esc(v.language)}</span></div>
+      <button data-v="${v.id}">Be this vendor</button></div>`).join("")}</div>`;
+  $app.querySelectorAll("button[data-v]").forEach(b => b.onclick = () => vendorRequest(b.dataset.v));
+}
+
+async function vendorRequest(vendorId) {
+  const r = await api(`/vendor-request?vendor_id=${vendorId}`);
+  $app.innerHTML = `<div class="card hero">
+      <span class="chip">New request</span>
+      <h2 style="margin-top:6px">${esc(r.service)} for the ${esc(r.family)}</h2>
+      <p>${esc(r.label)} · ${esc(r.area)} · ${esc(r.date)} at ${esc(r.start_time)} · ${r.guests} guests</p>
+      ${r.cuisine && r.service === "Caterer" ? `<p class="muted">Food: ${esc(r.cuisine)}</p>` : ""}
+      ${r.details ? `<p class="muted">Wishes: ${esc(r.details)}</p>` : ""}
+      <ol class="steps"><li>Accept, allow the microphone, and use headphones.</li>
+        <li>Mohan, Bandobast's calling agent, greets you in ${esc(r.language)} (you can answer in Hindi or English too).</li>
+        <li>Quote any price. It will check details, read the amounts back and may bargain.</li></ol>
+      <div class="err" id="verr"></div>
+      <div class="row" style="margin-top:14px"><button class="primary" id="accept">Accept and take the call</button>
+      <button id="back">Pick another vendor</button></div>
+    </div><div id="callarea"></div>`;
+  document.getElementById("back").onclick = vendorPick;
+  document.getElementById("accept").onclick = async () => {
+    const btn = document.getElementById("accept"); btn.disabled = true;
+    try {
+      // Ask for the microphone first, so a refusal doesn't use up a demo call.
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const ticket = await api("/vendor-calls", { method: "POST", body: JSON.stringify({ vendor_id: vendorId }) });
+      startCall(ticket, mic);
+    } catch (e) {
+      document.getElementById("verr").textContent = e.name === "NotAllowedError" ? "Microphone permission is needed for the call." : e.message;
+      btn.disabled = false;
+    }
+  };
+}
+
+// Browser audio: mic -> 16 kHz PCM16 chunks; Bandobast's 24 kHz PCM16 -> speakers.
+const WORKLET = `
+class Capture extends AudioWorkletProcessor {
+  constructor() { super(); this.ratio = sampleRate / 16000; this.pos = 0; this.out = []; }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch) {
+      while (this.pos < ch.length) {
+        const i = Math.floor(this.pos), f = this.pos - i, a = ch[i], b = ch[Math.min(i + 1, ch.length - 1)];
+        this.out.push(Math.max(-1, Math.min(1, a + (b - a) * f)));
+        this.pos += this.ratio;
+      }
+      this.pos -= ch.length;
+      if (this.out.length >= 320) {
+        const pcm = new Int16Array(this.out.length);
+        this.out.forEach((s, k) => pcm[k] = s * 32767);
+        this.port.postMessage(pcm.buffer, [pcm.buffer]);
+        this.out = [];
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("capture", Capture);`;
+
+// A quiet office around Mohan, so the call doesn't sound like dead air between lines: room tone, a little
+// line hiss and the odd keyboard click. No voices: speech in the background would be heard as the vendor.
+function ambience(ctx) {
+  const rate = ctx.sampleRate, seconds = 4, buf = ctx.createBuffer(1, rate * seconds, rate), d = buf.getChannelData(0);
+  let brown = 0;
+  for (let i = 0; i < d.length; i++) {
+    const white = Math.random() * 2 - 1;
+    brown = (brown + 0.02 * white) / 1.02;            // deep room rumble
+    d[i] = brown * 3.2 + white * 0.012;               // plus faint hiss
+  }
+  let power = 0;
+  for (let i = 0; i < d.length; i++) power += d[i] * d[i];
+  const norm = 1 / Math.sqrt(power / d.length);       // unit loudness, so the level below is in plain terms
+  for (let i = 0; i < d.length; i++) d[i] *= norm;
+  const fade = rate * 0.05;                           // seamless loop
+  for (let i = 0; i < fade; i++) { const k = i / fade; d[i] *= k; d[d.length - 1 - i] *= k; }
+  const out = ctx.createGain(); out.gain.value = 0; out.connect(ctx.destination);
+  const tone = ctx.createBufferSource(); tone.buffer = buf; tone.loop = true;
+  const low = ctx.createBiquadFilter(); low.type = "lowpass"; low.frequency.value = 900;
+  tone.connect(low).connect(out); tone.start();
+  let timer = null, on = true;
+  const click = () => {                               // a short, soft keystroke burst now and then
+    const n = 1 + Math.floor(Math.random() * 4), t0 = ctx.currentTime;
+    for (let k = 0; k < n; k++) {
+      const len = Math.floor(rate * 0.012), b = ctx.createBuffer(1, len, rate), c = b.getChannelData(0);
+      for (let i = 0; i < len; i++) c[i] = (Math.random() * 2 - 1) * Math.exp(-i / (len / 5));
+      const src = ctx.createBufferSource(), band = ctx.createBiquadFilter(), g = ctx.createGain();
+      src.buffer = b; band.type = "bandpass"; band.frequency.value = 2200 + Math.random() * 1500; g.gain.value = 2.5;
+      src.connect(band).connect(g).connect(out); src.start(t0 + k * (0.09 + Math.random() * 0.12));
+    }
+    timer = setTimeout(click, 4000 + Math.random() * 9000);
+  };
+  timer = setTimeout(click, 3000);
+  const level = 0.016;                                // about -36 dB: felt, not noticed, well under Mohan's voice
+  out.gain.setTargetAtTime(level, ctx.currentTime, 0.8);  // fade in
+  return {
+    toggle() { on = !on; out.gain.setTargetAtTime(on ? level : 0, ctx.currentTime, 0.2); return on; },
+    stop() { clearTimeout(timer); try { tone.stop(); } catch {} },
+  };
+}
+
+async function startCall(ticket, mic) {
+  const area = document.getElementById("callarea");
+  document.getElementById("accept").hidden = document.getElementById("back").hidden = true;
+  area.innerHTML = `<div class="callbox"><div>Mohan · Bandobast</div><div class="big" id="ctime">Connecting…</div>
+    <div class="small" id="cstate">Allowing a moment for the call to connect</div>
+    <div style="margin-top:14px"><button id="mute">Mute</button><button id="amb">Background: on</button><button class="end" id="hang">Hang up</button></div></div>
+    <div class="card" id="cresult" hidden></div>`;
+  const ctx = new AudioContext();
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
+  const source = ctx.createMediaStreamSource(mic);
+  const capture = new AudioWorkletNode(ctx, "capture");
+  source.connect(capture);
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}${ticket.audio_path}?token=${encodeURIComponent(ticket.audio_token)}`);
+  ws.binaryType = "arraybuffer";
+  let room = null, muted = false, playAt = 0, playing = [], t0 = null, timer = null, ended = false;
+  capture.port.onmessage = e => { if (ws.readyState === 1 && !muted) ws.send(e.data); };
+  ws.onmessage = e => {
+    if (typeof e.data === "string") {
+      const m = JSON.parse(e.data);
+      if (m.type === "connected") {
+        if (!room) room = ambience(ctx);
+        t0 = Date.now(); document.getElementById("cstate").textContent = "On call · speak naturally";
+        timer = setInterval(() => { const s = Math.floor((Date.now() - t0) / 1000); document.getElementById("ctime").textContent = `${String(s / 60 | 0).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; }, 500);
+      } else if (m.type === "clear") { playing.forEach(n => { try { n.stop(); } catch {} }); playing = []; playAt = 0; }
+      else if (m.type === "ended" || m.type === "error") finish(m.reason || "Call ended");
+      return;
+    }
+    const pcm = new Int16Array(e.data), buf = ctx.createBuffer(1, pcm.length, ticket.sample_rate_out);
+    const ch = buf.getChannelData(0); for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+    const node = ctx.createBufferSource(); node.buffer = buf; node.connect(ctx.destination);
+    playAt = Math.max(playAt, ctx.currentTime + 0.05); node.start(playAt); playAt += buf.duration;
+    playing.push(node); node.onended = () => { playing = playing.filter(n => n !== node); };
+  };
+  ws.onclose = () => finish("Call ended");
+  const finish = async reason => {
+    if (ended) return; ended = true; call = null;
+    clearInterval(timer);
+    try { ws.send(JSON.stringify({ type: "hangup" })); } catch {}
+    try { ws.close(); } catch {}
+    mic.getTracks().forEach(t => t.stop()); ctx.close();
+    document.getElementById("cstate").textContent = reason;
+    if (room) room.stop();
+    document.getElementById("mute").hidden = document.getElementById("hang").hidden = document.getElementById("amb").hidden = true;
+    const box = document.getElementById("cresult"); box.hidden = false; box.innerHTML = `<p class="muted">Saving the call…</p>`;
+    for (let i = 0; i < 30; i++) {
+      const r = await api(`/vendor-calls/${ticket.call_id}`).catch(() => null);
+      if (r?.done) {
+        const q = r.quote;
+        box.innerHTML = `<h3>What Bandobast recorded</h3>
+          ${q ? (q.available ? `<div class="quote"><div><small>Your price</small><b>${rupees(q.price)}${q.unit === "per_plate" ? " / plate" : ""}</b></div>
+            ${q.opening_price && q.opening_price !== q.price ? `<div><small>You first asked</small><b><s>${rupees(q.opening_price)}</s></b></div>` : ""}
+            <div><small>Family pays in total</small><b>${rupees(q.landed_cost)}</b></div><div><small>Advance</small><b>${rupees(q.advance)}</b></div></div>
+            <p class="small muted">The family sees this next to other quotes and decides; nothing is booked until they approve and you confirm.</p>`
+            : `<p>Recorded as not available.</p>`) : `<p class="muted">No quote was recorded (the call ended early).</p>`}
+          <details><summary>Transcript (what Bandobast heard)</summary><div class="chat">${r.transcript.map(t => `<div class="bubble ${t.who.startsWith("Mohan") ? "b" : "v"}"><span class="who">${esc(t.who)}</span>${esc(t.text)}</div>`).join("")}</div></details>
+          <p class="small muted">Your voice was not recorded.</p><button id="again">Try again</button>`;
+        document.getElementById("again").onclick = vendorPick;
+        return;
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    box.innerHTML = `<p class="muted">The call record isn't ready yet.</p>`;
+  };
+  call = { close: finish };
+  document.getElementById("hang").onclick = () => finish("Call ended");
+  document.getElementById("mute").onclick = e => { muted = !muted; e.target.textContent = muted ? "Unmute" : "Mute"; };
+  document.getElementById("amb").onclick = e => { if (room) e.target.textContent = `Background: ${room.toggle() ? "on" : "off"}`; };
+}
+
+// Routing: /demo?run=ID reopens a family run (shareable while the server runs).
+window.onpopstate = () => route();
+function route() {
+  const run = new URLSearchParams(location.search).get("run");
+  if (run) { api("/config").then(c => { CONFIG = c; showRun(run); }); } else landing();
+}
+route();
+</script>
+</body>
+</html>

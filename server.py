@@ -4,6 +4,7 @@ Run:  uv run uvicorn server:app --port 8765
 Then open http://localhost:8765
 """
 
+import asyncio
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -22,10 +23,12 @@ from twilio.twiml.voice_response import Connect, VoiceResponse
 
 import app_api
 import app_calls
+import demo
 import enquiries
 import confirmations
 import browser
 import catalog
+import greeting
 import prompts
 import rules
 import store
@@ -41,6 +44,14 @@ load_dotenv(Path(__file__).parent / ".env")
 STATIC = Path(__file__).parent / "static"
 
 
+def _prewarm_greetings() -> None:
+    try:
+        if made := greeting.prewarm():
+            logger.info(f"Generated {made} greeting clips")
+    except Exception as error:
+        logger.warning(f"Greeting clips not generated ({type(error).__name__}); calls fall back to live TTS")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     confirmations.recover_interrupted()
@@ -49,6 +60,9 @@ async def lifespan(_app: FastAPI):
         scheduler.start()
     else:
         checkin_dispatch.recover()
+    if os.environ.get("GREETINGS_PREWARM", "1") == "1":
+        # Missing greeting clips (a fresh server, a new vendor) are made once, in the background.
+        asyncio.get_running_loop().run_in_executor(None, _prewarm_greetings)
     try:
         yield
     finally:
@@ -59,6 +73,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Bandobast", lifespan=lifespan)
 app.include_router(app_api.router)  # the Flutter app (access key required)
+if demo.enabled():
+    app.include_router(demo.router)  # public web demo, capped per day and per visitor
 
 
 def local_only(request: Request) -> None:

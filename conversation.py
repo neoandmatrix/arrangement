@@ -3,6 +3,7 @@
 audio in -> Gnani Prisma STT -> Groq LLM (+ tools) -> Gnani Timbre TTS -> audio out
 """
 
+import asyncio
 import os
 import re
 import time
@@ -18,6 +19,10 @@ from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    InterimTranscriptionFrame,
+    TranscriptionFrame,
     EndTaskFrame,
     Frame,
     FunctionCallResultProperties,
@@ -26,8 +31,13 @@ from pipecat.frames.frames import (
     LLMRunFrame,
     LLMTextFrame,
     LLMContextFrame,
+    TTSAudioRawFrame,
     TTSSpeakFrame,
+    TTSStartedFrame,
     TTSStoppedFrame,
+    UserStartedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.pipeline import Pipeline
@@ -43,16 +53,24 @@ from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.transcriptions.language import Language
+from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_start.min_words_user_turn_start_strategy import MinWordsUserTurnStartStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.empty_user_turn import DEFAULT_EMPTY_USER_TURN_INTERRUPTED_PROMPT, EmptyUserTurnConfig
 from pipecat.transports.base_transport import BaseTransport
 from pipecat.utils.text.transforms import strip_markdown
 from pipecat.workers.runner import WorkerRunner
 from pipecat_gnani import INDIC_AUTO_LANGUAGE_CODE, GnaniSTTService, GnaniTTSService
 
 import catalog
+import greeting
 import prompts
 import price_safety
 import rules
 import store
+import supervisor
 import workflow
 import confirmation_rules
 import confirmations
@@ -61,11 +79,15 @@ import checkin_policy
 
 # Timbre v3.0 voices speak all 10 languages, so one voice works for every vendor.
 TTS_MODEL = "timbre-v3.0"
-TTS_VOICE = "Shivani"
+TTS_VOICE = os.environ.get("BANDOBAST_VOICE", "Yashraj")  # a man's voice: the agent is "Mohan" (prompts.AGENT_NAME)
 
 MODES = ("intake", "vendor_call", "checkin", "form", "vendor_update", "confirmation")
 
 CALL_CONNECTED = "[The call has connected and the other person has picked up. Say your greeting now.]"
+
+# call_id -> callback given the live LLM context when that call starts. The web demo uses it to
+# show the transcript as it happens and to let its simulated vendor follow what Bandobast said.
+CONTEXT_TAPS: dict[str, Callable[[LLMContext], None]] = {}
 
 TOOL_NAMES = ("end_call", "save_brief", "record_quote", "record_checkin", "fill_form", "record_update", "start_confirmation", "record_confirmation")
 
@@ -122,9 +144,89 @@ END_CALL = FunctionSchema(
             "description": "True only if they are busy and asked to be called back later.",
         },
         'callback_at': {'type': ['string', 'null'], 'description': 'For a check-in callback, the vendor-requested venue-local ISO date/time. Null if they did not give a time.'},
+        "improper_request": {
+            "type": "boolean",
+            "description": "True only if they insisted on an improper demand (alcohol, gifts, off-record cash) after you declined once.",
+        },
     },
     required=["reason", "callback_requested"],
 )
+
+SMART_TURN_STOP_SECS = float(os.environ.get("SMART_TURN_STOP_SECS", "1.2"))
+MIN_INTERRUPT_WORDS = int(os.environ.get("MIN_INTERRUPT_WORDS", "3"))
+
+EMPTY_TURN_PROMPT = (
+    "They just spoke but the words were not recognised. In one short line, in their language, say you could "
+    "not hear clearly and ask them to say it again (in Hindi: \"सॉरी, आवाज़ क्लियर नहीं आई, फिर से बोलिए?\"). "
+    "If your last question is still unanswered, repeat it briefly. Don't call any tool."
+)
+
+ASK_AGAIN = {"hi-IN": "सॉरी, आवाज़ क्लियर नहीं आई, फिर से बोलिए?",
+             "en-IN": "Sorry, I couldn't hear that clearly. Could you say it again?"}
+
+EMPTY_TURN_PROMPTS = (EMPTY_TURN_PROMPT, DEFAULT_EMPTY_USER_TURN_INTERRUPTED_PROMPT)
+
+# Fixed lines, filled with the call's price plan (rules.price_plan). Code picks them; the model only says them.
+# When a rate is far above normal (price_safety.rechecks): first assume we misheard, then name our maximum.
+HIGH_PRICE_LINES = (
+    "सॉरी सर, मैंने रेट ठीक से सुना नहीं, आप रिपीट कर सकते हैं क्या?",
+    "सर, ये अमाउंट बहुत हाई है। हम मैक्सिमम {maximum} रुपये {unit} तक कर सकते हैं, इतने में हो जाएगा?",
+)
+HIGH_PRICE_MEANING = (
+    "Sorry sir, I didn't hear the rate properly, could you repeat it?",
+    "Sir, this amount is very high. The most we can do is {maximum} rupees {unit_en}. Can you do it for that?",
+)
+BARGAIN_LINES = {
+    "expected": "सर, फैमिली का बजट {amount} रुपये {unit} के आसपास है, इतने में हो पाएगा?",
+    "maximum": "सर, हम मैक्सिमम {amount} रुपये {unit} तक कर सकते हैं, इतने में हो जाएगा?",
+}
+BARGAIN_MEANING = {
+    "expected": "Sir, the family's budget is around {amount} rupees {unit_en}. Can you do it for that?",
+    "maximum": "Sir, the most we can do is {amount} rupees {unit_en}. Can you do it for that?",
+}
+# The vendor asking about the job before quoting: size, people, place, what's needed.
+ASKS_SCOPE = re.compile(r"कितना बड़ा|कितनी बड़ी|कितने (?:लोग|गेस्ट|आदमी|मेहमान)|कितनी जगह|जगह कितनी|कहाँ (?:है|पर)|कहां (?:है|पर)|"
+                        r"क्या[- ]क्या|कैसे[- ]कैसे|\bhow (?:big|many|much space)\b|\bwhere is\b|\bwhat (?:all|exactly)\b", re.I)
+RATE_QUESTION = {True: "एक प्लेट का रेट कितना है?", False: "टोटल रेट कितना है?"}  # keyed by is-caterer
+UNIT_WORDS = {"per_plate": ("पर प्लेट", "per plate"), "total": ("टोटल", "in total")}
+
+
+def fixed_text(language: str, hindi: str, meaning: str, **values: Any) -> str | None:
+    """The exact words code speaks itself (Hindi, English), or None where the model must translate."""
+    unit, unit_en = UNIT_WORDS[values.pop("unit_key", "total")]
+    filled = {**values, "unit": unit, "unit_en": unit_en}
+    if language == "hi-IN":
+        return hindi.format(**filled)
+    if language == "en-IN":
+        return meaning.format(**filled)
+    return None
+
+
+def fixed_line(language: str, hindi: str, meaning: str, **values: Any) -> str:
+    """The instruction to say one fixed line, for languages code can't speak verbatim."""
+    unit, unit_en = UNIT_WORDS[values.get("unit_key", "total")]
+    text = fixed_text(language, hindi, meaning, **values)
+    if text:
+        return f'Say exactly this and nothing else: "{text}"'
+    filled = {k: v for k, v in values.items() if k != "unit_key"}
+    return f'Say only this, in their language, with the amount as digits: "{meaning.format(**filled, unit=unit, unit_en=unit_en)}"'
+
+
+# Outbound calls that open with Mohan's fixed greeting (prompts._opening).
+GREETED_MODES = ("vendor_call", "checkin", "confirmation")
+
+
+def greeting_frames(text: str, language: str, rate: int) -> list[Frame]:
+    """Saved greeting audio if we have it; otherwise the same text through live TTS, saved for next time."""
+    pcm = greeting.cached(text, language, rate)
+    if pcm is None:
+        asyncio.get_running_loop().create_task(greeting.save_later(text, language, rate))
+        return [TTSSpeakFrame(text, append_to_context=False)]
+    context_id = f"greeting-{uuid.uuid4().hex[:8]}"
+    return [TTSStartedFrame(context_id=context_id),
+            TTSAudioRawFrame(audio=pcm, sample_rate=rate, num_channels=1, context_id=context_id),
+            TTSStoppedFrame(context_id=context_id)]
+
 
 # What each conversation must record before it may hang up.
 REQUIRED_RESULT = {"intake": "save_brief", "vendor_call": "record_quote", "checkin": "record_checkin",
@@ -178,12 +280,17 @@ RECORD_QUOTE = FunctionSchema(
             "description": "Other charges in rupees besides transport: samagri, serving staff, flowers etc.",
         },
         "extra_charges_notes": {"type": ["string", "null"]},
-        "gst_included": {"type": ["boolean", "null"]},
+        "extras_at_actuals": {"type": ["boolean", "null"],
+                              "description": "True if they said some costs (e.g. materials) will be billed later at actual cost, "
+                                             "with no fixed amount now. Then extra_charges_amount is 0 and the note says what."},
+        "gst_included": {"type": ["boolean", "null"], "description": "True if their price includes GST; false if GST is extra"},
+        "gst_percent": {"type": ["integer", "null"], "enum": [5, 12, 18, 28, None],
+                        "description": "If GST is extra: the percent the vendor said (5, 12, 18 or 28). Null if included."},
         "advance_amount": {"type": ["integer", "null"], "description": "Rupees; 0 if no advance"},
         "includes_notes": {"type": ["string", "null"], "description": "What the price covers"},
         "notes": {"type": ["string", "null"], "description": "Anything else important, e.g. language, timing"},
     },
-    required=["available", "price_amount", "price_unit"],
+    required=[],  # code checks what is missing (quote_problems); a strict schema made Groq fail the whole call
 )
 
 RECORD_CHECKIN = FunctionSchema(
@@ -362,6 +469,8 @@ async def _run_conversation(
         messages=[{"role": "system", "content": system_prompt}],
         tools=ToolsSchema(standard_tools=tools),
     )
+    if tap := CONTEXT_TAPS.get(cfg.call_id):
+        tap(context)
     outcome: dict[str, Any] = {}
     confirmation_state: dict[str, Any] = {'controlled': False, 'started': False, 'index': 0, 'ready_turn': None, 'tts_context': None}
     booking_record = store.confirmation(cfg.confirmation_id) if cfg.mode == 'confirmation' else None
@@ -374,12 +483,15 @@ async def _run_conversation(
             outcome["opening_quote"] = opening
 
     def user_turns() -> int:
-        return sum(_is_spoken_turn(m) and m["role"] == "user" for m in context.get_messages())
+        # An unrecognised utterance still counts as their turn: they did speak, so our "please repeat"
+        # must not be held back as a second question in a row.
+        return sum((_is_spoken_turn(m) and m["role"] == "user") or _is_empty_turn(m) for m in context.get_messages())
 
     def other_side_has_spoken() -> bool:
         return user_turns() > 0
 
     question_gate = OneQuestionPerTurn(user_turns=user_turns, english_ok=language == "en-IN", tool_only=lambda: confirmation_state['controlled'])
+    auto_hangup = AutoHangup(user_turns=user_turns, awaiting_answer=lambda: question_gate.awaiting_answer, outcome=outcome)
 
     if booking_record:
         @tts.event_handler('on_tts_request')
@@ -521,7 +633,7 @@ async def _run_conversation(
             return False
         log.warning(f"{fn.function_name} refused: waiting for their answer")
         await fn.result_callback(
-            {"ok": False, "error": "You just asked them a question. Wait for their answer first."},
+            {"ok": False, "error": f"You just asked them a question. Wait for their answer, then call {fn.function_name} again."},
             properties=FunctionCallResultProperties(run_llm=False),
         )
         return True
@@ -536,7 +648,7 @@ async def _run_conversation(
             return
         # Hard rule: don't hang up before the job is done, unless they asked to be called later.
         required = REQUIRED_RESULT[cfg.mode]
-        if required not in outcome.get("recorded", set()) and not fn.arguments.get("callback_requested"):
+        if required not in outcome.get("recorded", set()) and not fn.arguments.get("callback_requested") and not fn.arguments.get("improper_request"):
             log.warning(f"end_call refused: {required} not done yet")
             await fn.result_callback(
                 {
@@ -567,11 +679,14 @@ async def _run_conversation(
     async def reject(fn: FunctionCallParams, problems: list[str]) -> None:
         log.warning(f"{fn.function_name} rejected: {problems}")
         await fn.result_callback(
-            {"ok": False, "error": "Not saved. Still missing or invalid: " + "; ".join(problems) + ". Ask about these, one at a time."}
+            {"ok": False, "error": "Not saved. Still missing or invalid: " + "; ".join(problems) + ". Ask about these, one at a time. "
+             f"As soon as they answer, call {fn.function_name} again with everything, including what they just said."}
         )
 
     def mark_recorded(name: str) -> None:
         outcome.setdefault("recorded", set()).add(name)
+        if name == REQUIRED_RESULT[cfg.mode] and cfg.mode not in ("intake", "form"):
+            auto_hangup.arm()
 
     async def save_brief(fn: FunctionCallParams) -> None:
         if await answer_pending(fn):
@@ -651,16 +766,19 @@ async def _run_conversation(
             await reject(fn, ["the vendor must speak before any quote is recorded"])
             return
         category = store.vendor(cfg.vendor_id)["category"]
+        fill_stated_charges(fn.arguments, _transcript(context), category)
         if problems := quote_problems(fn.arguments, category):
             await reject(fn, problems)
             return
         _, brief = store.event(event_id)
         quote = checked_quote(dict(fn.arguments), _transcript(context), brief, category, cfg.call_id, previous_quote)
+        if await push_back_on_high_price(fn, quote, brief, category):
+            return
         problems = price_safety.issues(quote, brief, category)
         if problems:
             # Bounded recovery, not bounded safety: unresolved quotes remain blocked even after retries.
             outcome["quote_rejections"] = outcome.get("quote_rejections", 0) + 1
-            if outcome["quote_rejections"] <= 2:
+            if outcome["quote_rejections"] <= 1:  # ask once; then save it blocked rather than loop (seen live: 4 repeats)
                 await reject(fn, [p["reason"] + ". Ask only about this charge and have them repeat its amount in rupees, not just yes" for p in problems])
                 return
         if not problems and quote.get("available"):
@@ -718,6 +836,170 @@ async def _run_conversation(
         # The vendor isn't told about a switch to the backup; that's for the family.
         await fn.result_callback({"ok": True})
 
+    def high_price_line(asks: int, category: str, brief: dict[str, Any]) -> tuple[str | None, str]:
+        """(words code speaks itself, or None; the instruction for the model otherwise)."""
+        plan = rules.price_plan(category, brief)
+        if asks >= 1:
+            outcome["maximum_offered"] = True  # we named our maximum; bargaining won't ask lower than it
+        values = {"maximum": plan["maximum"], "unit_key": plan["unit"]}
+        return (fixed_text(language, HIGH_PRICE_LINES[asks], HIGH_PRICE_MEANING[asks], **values),
+                fixed_line(language, HIGH_PRICE_LINES[asks], HIGH_PRICE_MEANING[asks], **values))
+
+    def speak_fixed(text: str) -> list[Frame]:
+        """Mohan says a code-picked line word for word, without an LLM turn, and then waits for the answer."""
+        question_gate.mark_question()
+        return [TTSSpeakFrame(text)]
+
+    def ask_to_repeat() -> list[Frame]:
+        """Spoken by code in Hindi and English; other languages get the model to say it."""
+        if language in ASK_AGAIN:
+            return speak_fixed(ASK_AGAIN[language])
+        context.add_message({"role": "developer", "content": EMPTY_TURN_PROMPT})
+        return [LLMRunFrame()]
+
+    def function_details_hint() -> list[Frame] | None:
+        """When the vendor asks how big the function is or where, code answers with the fixed details line.
+
+        Seen live: "function कितना बड़ा है?" got "रेट कितना है?" four times. At most twice a call.
+        """
+        if cfg.mode != "vendor_call" or language not in ("hi-IN", "en-IN") or outcome.get("details_told", 0) >= 2:
+            return None
+        dialogue = _transcript(context)
+        if not dialogue or dialogue[-1]["role"] != "vendor_or_family" or not ASKS_SCOPE.search(dialogue[-1]["text"]):
+            return None
+        vendor = store.vendor(cfg.vendor_id)
+        _, brief = store.event(event_id)
+        scope, scope_en = catalog.scope_line(vendor["category"], brief)
+        rate_known = "price_amount" in price_safety.stated(dialogue, vendor["category"])
+        if language == "hi-IN":
+            text = f"{scope}।" if rate_known else f"{scope}। {'पर प्लेट रेट' if vendor['category'] == 'caterer' else 'इसका रेट'} कितना होगा?"
+        else:
+            text = f"{scope_en}." if rate_known else f"{scope_en}. How much would it be?"
+        outcome["details_told"] = outcome.get("details_told", 0) + 1
+        log.info("vendor asked about the function: told the fixed details")
+        if text.endswith("?"):
+            return speak_fixed(text)
+        return [TTSSpeakFrame(text)]
+
+    def bargain_now(category: str, brief: dict[str, Any], amount: int, unit: str) -> list[Frame] | None:
+        """Above our maximum: say the maximum right away, once. In range: nothing to say; it's accepted."""
+        if category not in rules.NEGOTIABLE or outcome.get("maximum_offered"):
+            return None
+        result = rules.counter_offer(category, {"price_amount": amount, "price_unit": unit}, brief, round_no=1)
+        if not result.get("negotiate"):
+            return None
+        outcome["maximum_offered"] = True
+        log.info(f"rate {amount} above our maximum: said {result['price_amount']} now")
+        values = {"amount": result["price_amount"], "unit_key": result["price_unit"]}
+        text = fixed_text(language, BARGAIN_LINES["maximum"], BARGAIN_MEANING["maximum"], **values)
+        if text:
+            return speak_fixed(text)
+        context.add_message({"role": "developer", "content": fixed_line(language, BARGAIN_LINES["maximum"], BARGAIN_MEANING["maximum"], **values)
+                             + " Then wait for their answer. Don't call any tool now."})
+        return None
+
+    def high_price_hint() -> list[Frame] | None:
+        """Push back the moment the vendor names a rate far above normal, not at the read-back.
+
+        Runs on each vendor turn before the model replies. If they just stated the base rate and it's
+        unusually high, the model is told the exact line to say now (the same lines and counter as at save).
+        """
+        if cfg.mode != "vendor_call" or cfg.reconfirm or outcome.get("high_price_asks", 0) >= len(HIGH_PRICE_LINES):
+            return
+        dialogue = _transcript(context)
+        if not dialogue or dialogue[-1]["role"] != "vendor_or_family":
+            return
+        # Their reply can arrive as two messages ("एक मिनट..." then "5000 रुपये"): read all since our last line.
+        replies, question = [], ""
+        for turn in reversed(dialogue):
+            if turn["role"] == "bandobast":
+                question = turn["text"]
+                break
+            replies.insert(0, turn["text"])
+        said_text = " ".join(replies)
+        category = store.vendor(cfg.vendor_id)["category"]
+        said = price_safety._assertions(said_text, question, category).get("price_amount")
+        if not said and outcome.get("high_price_asks"):
+            # They are answering our "please repeat the rate": read the reply as a rate.
+            said = price_safety._assertions(said_text, RATE_QUESTION[category == "caterer"], category).get("price_amount")
+        if not said:
+            return
+        amount, unit = said
+        _, brief = store.event(event_id)
+        unit = unit or outcome.get("rate_unit") or rules.price_plan(category, brief)["unit"]  # "50,000" after "please repeat"
+        outcome["rate_unit"] = unit
+        if "price_amount" not in price_safety.rechecks({"available": True, "price_amount": amount, "price_unit": unit}, brief, category):
+            return bargain_now(category, brief, amount, unit)
+        asks = outcome.get("high_price_asks", 0)
+        outcome["high_price_asks"] = asks + 1
+        log.info(f"high price {amount} said: push back {asks + 1} now")
+        text, say = high_price_line(asks, category, brief)
+        if text:
+            return speak_fixed(text)
+        context.add_message({"role": "developer", "content": f"The rate they just said ({amount}) is far above normal. {say} "
+                             "Then wait for their answer. Don't call any tool now."})
+        return None
+
+    reviewing: dict[str, Any] = {"task": None, "count": 0}
+
+    def start_review() -> None:
+        """Ask the stronger supervisor model to look over the call, in the background (supervisor.py)."""
+        if cfg.mode != "vendor_call" or not supervisor.enabled() or reviewing["count"] >= supervisor.max_reviews():
+            return
+        if reviewing["task"] and not reviewing["task"].done():
+            return  # one review at a time; the next vendor turn starts a fresh one
+        dialogue = _transcript(context)
+        if not dialogue or dialogue[-1]["role"] != "vendor_or_family":
+            return
+        reviewing["count"] += 1
+        vendor = store.vendor(cfg.vendor_id)
+        about = (f"{vendor['name']}, a {catalog.CATEGORIES[vendor['category']]['spoken']}, speaks "
+                 f"{prompts.LANGUAGE_NAMES.get(language, language)}. Saved so far: "
+                 f"{', '.join(sorted(outcome.get('recorded', set()))) or 'nothing'}.")
+        if vendor["category"] in rules.NEGOTIABLE:
+            plan = rules.price_plan(vendor["category"], store.event(event_id)[1])
+            about += (f" Price plan fixed by code ({plan['unit'].replace('_', ' ')}): expect {plan['expected']}, "
+                      f"maximum {plan['maximum']}; Mohan may say these amounts, and code picks the bargaining lines.")
+
+        async def run() -> None:
+            note = await supervisor.review(dialogue, about)
+            if note:
+                outcome.setdefault("supervisor_notes", []).append(note)
+                context.add_message({"role": "developer", "content": f"Note from your supervisor, who is listening to this call: {note}"})
+
+        reviewing["task"] = asyncio.get_running_loop().create_task(run())
+
+    async def push_back_on_high_price(fn: FunctionCallParams, quote: dict[str, Any], brief: dict[str, Any], category: str) -> bool:
+        """A rate far above normal gets a polite "sorry, didn't catch that", then "that's too high".
+
+        Code picks the line, not the model. The third time the amount stands: it is saved, and the
+        family sees it against their budget. Returns True if the save is held.
+        """
+        if cfg.mode != "vendor_call" or cfg.reconfirm or not quote.get("available"):
+            return False
+        if "price_amount" not in price_safety.rechecks(quote, brief, category):
+            return False
+        asks = outcome.get("high_price_asks", 0)
+        if asks >= len(HIGH_PRICE_LINES):
+            return False
+        outcome["high_price_asks"] = asks + 1
+        text, say = high_price_line(asks, category, brief)
+        log.info(f"high price {quote.get('price_amount')}: push back {asks + 1}")
+        await hold_save(fn, text, say)
+        return True
+
+    async def hold_save(fn: FunctionCallParams, text: str | None, say: str) -> None:
+        """Hold the save while Mohan asks a code-picked question; spoken by code where it can be."""
+        if text:
+            await fn.result_callback({"ok": False, "saved": False, "next": f'Not saved yet. Mohan asked: "{text}" '
+                                      "When they answer, call record_quote again with the numbers they give now."},
+                                     properties=FunctionCallResultProperties(run_llm=False))
+            for frame in speak_fixed(text):
+                await fn.llm.push_frame(frame)
+            return
+        await fn.result_callback({"ok": False, "saved": False, "next": f"Not saved yet. {say} When they answer, "
+                                  "call record_quote again with the numbers they give now."})
+
     async def negotiate_first(fn: FunctionCallParams, category: str, quote: dict[str, Any]) -> bool:
         """Hold a confirmed caterer or decorator quote while the rules want a counter-offer.
 
@@ -733,28 +1015,17 @@ async def _run_conversation(
             quote,
             brief,
             round_no=outcome["negotiation_round"],
-            competing_total=rules.best_competing_total(
-                [q for v, q in store.latest_quotes(event_id).items() if v != cfg.vendor_id and store.vendor(v)["category"] == category], brief),
-            previous_ask_total=outcome.get("last_ask_total"),
+            maximum_offered=bool(outcome.get("maximum_offered")),
         )
         log.info(f"negotiation round {outcome['negotiation_round']}: {quote.get('price_amount')} -> {result}")
         if not result["negotiate"]:
             outcome["negotiation_done"] = True
             return False
-        outcome["last_ask_total"] = result.get("asked_total", outcome.get("last_ask_total"))
-        if result["ask"] == "waive_transport":
-            ask = "if they could include transport at no extra charge"
-        else:
-            unit = "per plate" if result["price_unit"] == "per_plate" else "in total"
-            ask = f"if they could do {result['price_amount']} rupees {unit}"
-        await fn.result_callback(
-            {
-                "ok": False,
-                "saved": False,
-                "next": f"Before saving, negotiate: politely ask {ask}. Reason you may give: {result['why']} "
-                "Ask only this, warmly. When they answer, call record_quote again with the numbers they agree to now.",
-            }
-        )
+        if result["reason"] == "maximum":
+            outcome["maximum_offered"] = True
+        values = {"amount": result["price_amount"], "unit_key": result["price_unit"]}
+        hindi, meaning = BARGAIN_LINES[result["reason"]], BARGAIN_MEANING[result["reason"]]
+        await hold_save(fn, fixed_text(language, hindi, meaning, **values), fixed_line(language, hindi, meaning, **values))
         return True
 
     handlers = {
@@ -775,6 +1046,18 @@ async def _run_conversation(
         user_params=LLMUserAggregatorParams(
             # People pause between sentences mid-answer; too short a wait makes the bot answer twice.
             vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.8)),
+            # Smart Turn often judges short Hindi answers ("हाँ, बोलिए") unfinished and then waited its default
+            # 3 s of silence: about 40% of turns in a live call lost exactly 3 s. Cap that wait.
+            # Seen live: background voices ("हाँ, cash लेते हैं", a TV) set off the voice detector and cut every
+            # reply off within half a second, so Mohan went silent. A turn now starts on transcribed words, and
+            # cutting Mohan off mid-sentence takes MIN_INTERRUPT_WORDS words.
+            user_turn_strategies=UserTurnStrategies(
+                start=[MinWordsUserTurnStartStrategy(min_words=MIN_INTERRUPT_WORDS)],
+                stop=[TurnAnalyzerUserTurnStopStrategy(
+                turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=SMART_TURN_STOP_SECS)))]),
+            # On a phone line, speech the STT returns nothing for is usually real speech, not noise.
+            # Left unanswered, both sides wait in silence (seen live: 24 s of dead air, then a hang-up).
+            empty_user_turn=EmptyUserTurnConfig(idle_prompt=EMPTY_TURN_PROMPT, max_consecutive_recoveries=1),
         ),
     )
     pipeline = Pipeline(
@@ -782,11 +1065,14 @@ async def _run_conversation(
             transport.input(),
             stt,
             aggregators.user(),
+            UnheardSpeech(ask_to_repeat),
             *([ConfirmationAnswerRouter(confirmation_state, advance_confirmation)] if booking_record else []),
+            BeforeReply(start_review, high_price_hint, function_details_hint),
             llm,
             question_gate,
             tts,
             transport.output(),
+            auto_hangup,
             *([ConfirmationSpeechTracker(confirmation_state, user_turns)] if booking_record else []),
             aggregators.assistant(),
         ]
@@ -822,12 +1108,21 @@ async def _run_conversation(
         # Many errors are transient (a service reconnects); it only explains the end if nothing else does.
         outcome["last_error"] = f"error: {getattr(frame, 'error', frame)}"[:300]
 
+    opening = greeting.opening_line(store.vendor(cfg.vendor_id), language) if cfg.mode in GREETED_MODES and cfg.vendor_id else None
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
         # Without this the model can decide the call is already over and hang up silently.
         # It's a user-role stage direction because some chat templates (Qwen) need a user turn.
         context.add_message({"role": "user", "content": CALL_CONNECTED})
-        await task.queue_frames([LLMRunFrame()])
+        if not opening:
+            await task.queue_frames([LLMRunFrame()])
+            return
+        # The first line is fixed, so it plays at once from saved audio instead of waiting for the
+        # LLM and the TTS. Then the model waits for their answer like after any question.
+        context.add_message({"role": "assistant", "content": opening})
+        question_gate.mark_greeted()
+        await task.queue_frames(greeting_frames(opening, language, sample_rate_out))
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):
@@ -860,6 +1155,64 @@ async def _run_conversation(
             enquiries.queue_pending_confirmations(event_id)
 
 
+class AutoHangup(FrameProcessor):
+    """Hang up from our side once the call's job is done and the goodbye has been spoken.
+
+    The model is told to call end_call, but sometimes it just says goodbye and waits, leaving the
+    vendor holding a silent line. Once armed (the quote or update is saved), the first goodbye we
+    finish speaking starts a short timer; if the other side doesn't speak and we didn't ask anything,
+    the call ends. If they do speak, the bot answers and the timer starts again after that reply.
+    """
+
+    GRACE_SECS = 4.0
+
+    def __init__(self, *, user_turns: Callable[[], int], awaiting_answer: Callable[[], bool], outcome: dict[str, Any],
+                 grace_secs: float | None = None):
+        super().__init__()
+        self.user_turns = user_turns
+        self.awaiting_answer = awaiting_answer
+        self.outcome = outcome
+        self.grace = self.GRACE_SECS if grace_secs is None else grace_secs
+        self.armed = False
+        self.spoke_since_armed = False
+        self._timer: asyncio.Task | None = None
+
+    def arm(self) -> None:
+        self.armed = True
+        self.spoke_since_armed = False
+
+    def _cancel(self) -> None:
+        if self._timer and not self._timer.done():
+            self._timer.cancel()
+        self._timer = None
+
+    async def _hang_up_later(self, turns: int) -> None:
+        await asyncio.sleep(self.grace)
+        if self.user_turns() != turns or self.awaiting_answer():
+            return
+        self.outcome.setdefault("end_reason", "Hung up automatically after the goodbye")
+        logger.info("auto hang-up: job done and goodbye spoken")
+        await self.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, (UserStartedSpeakingFrame, VADUserStartedSpeakingFrame)):
+            self._cancel()
+        elif isinstance(frame, BotStartedSpeakingFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._cancel()
+            if self.armed:
+                self.spoke_since_armed = True
+        elif (isinstance(frame, BotStoppedSpeakingFrame) and direction == FrameDirection.DOWNSTREAM
+              and self.armed and self.spoke_since_armed and not self.awaiting_answer()):
+            self._cancel()
+            self._timer = asyncio.create_task(self._hang_up_later(self.user_turns()))
+        await self.push_frame(frame, direction)
+
+    async def cleanup(self):
+        self._cancel()
+        await super().cleanup()
+
+
 class ConfirmationSpeechTracker(FrameProcessor):
     """A yes only counts after the exact code-approved question has reached the audio output."""
 
@@ -878,6 +1231,93 @@ class ConfirmationSpeechTracker(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, TTSStoppedFrame) and direction == FrameDirection.DOWNSTREAM:
             self.mark_delivery(frame.context_id)
+        await self.push_frame(frame, direction)
+
+
+class UnheardSpeech(FrameProcessor):
+    """"Sorry, I couldn't hear that" when they clearly spoke but no words came through.
+
+    Turns start on transcribed words (so background noise can't cut Mohan off), which means speech the
+    STT returns nothing for never starts a turn, and both sides would wait in silence. This watches the
+    voice detector instead: at least MIN_SPEECH_SECS of speech, then GRACE_SECS with no words, no turn
+    and Mohan not talking, and code asks them to repeat. Once, until they are heard again.
+    """
+
+    MIN_SPEECH_SECS = 1.0
+    GRACE_SECS = 2.5
+
+    def __init__(self, ask_again: Callable[[], list[Frame]], *, grace_secs: float | None = None):
+        super().__init__()
+        self.ask_again = ask_again
+        self.grace = self.GRACE_SECS if grace_secs is None else grace_secs
+        self.armed = True
+        self.bot_speaking = False
+        self.speech_started: float | None = None
+        self.heard = False
+        self._timer: asyncio.Task | None = None
+
+    def _cancel(self) -> None:
+        if self._timer and not self._timer.done():
+            self._timer.cancel()
+        self._timer = None
+
+    async def _ask_later(self) -> None:
+        await asyncio.sleep(self.grace)
+        if self.heard or self.bot_speaking or not self.armed:
+            return
+        self.armed = False
+        logger.info("speech with no words: asking them to repeat")
+        for frame in self.ask_again():
+            await self.push_frame(frame, FrameDirection.DOWNSTREAM)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self.bot_speaking = True
+            self._cancel()
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self.bot_speaking = False
+        elif isinstance(frame, (UserStartedSpeakingFrame, TranscriptionFrame, InterimTranscriptionFrame)):
+            self.heard = True  # words came through: the normal turn handles it
+            self.armed = True
+            self._cancel()
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self.speech_started, self.heard = time.monotonic(), False
+            self._cancel()
+        elif isinstance(frame, VADUserStoppedSpeakingFrame) and self.speech_started is not None:
+            spoke = time.monotonic() - self.speech_started - (frame.stop_secs or 0)
+            self.speech_started = None
+            if spoke >= self.MIN_SPEECH_SECS and self.armed and not self.heard and not self.bot_speaking:
+                self._cancel()
+                self._timer = asyncio.get_running_loop().create_task(self._ask_later())
+        await self.push_frame(frame, direction)
+
+    async def cleanup(self):
+        self._cancel()
+        await super().cleanup()
+
+
+class BeforeReply(FrameProcessor):
+    """Runs checks on the context after each of their turns, just before the model replies."""
+
+    def __init__(self, *hooks: Callable[[], list[Frame] | None]):
+        super().__init__()
+        self.hooks = hooks
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
+            for hook in self.hooks:
+                try:
+                    instead = hook()
+                except Exception as error:  # a hint must never break the call
+                    logger.warning(f"BeforeReply hook failed ({type(error).__name__}: {error})")
+                    continue
+                if instead:
+                    # Code answers this turn itself (a fixed line): no LLM run.
+                    for replacement in instead:
+                        await self.push_frame(replacement, direction)
+                    return
         await self.push_frame(frame, direction)
 
 
@@ -984,6 +1424,11 @@ class OneQuestionPerTurn(FrameProcessor):
     def mark_question(self) -> None:
         self._asked_at = self._user_turns()
 
+    def mark_greeted(self) -> None:
+        """Code already spoke the opening question; the model's first reply is not the greeting."""
+        self._replies += 1
+        self.mark_question()
+
     @property
     def awaiting_answer(self) -> bool:
         """Our last spoken question hasn't been answered yet."""
@@ -1047,13 +1492,37 @@ def brief_problems(args: dict[str, Any]) -> list[str]:
     return problems
 
 
+def fill_stated_charges(args: dict[str, Any], dialogue: list[dict[str, str]], category: str) -> None:
+    """Fill a charge the model left empty with what the vendor clearly said for it.
+
+    Seen live: the vendor said "कोई extra staff नहीं चाहिए", the model saved extras as null, the save was
+    refused, and the call ended without a quote. Only empty fields are filled, never the model's values,
+    and only from the vendor's own words; the price audit still checks the result.
+    """
+    if not args.get("available"):
+        return
+    for field, (amount, unit) in price_safety.stated(dialogue, category).items():
+        if args.get(field) is None:
+            args[field] = amount
+            if field == "price_amount" and unit and not args.get("price_unit"):
+                args["price_unit"] = unit
+
+
 def quote_problems(args: dict[str, Any], category: str) -> list[str]:
     """Whether they're free, and if so every item for their category, must be answered."""
     if args.get("available") is None:
         return ["whether they are available on the date"]
     if not args.get("available"):
         return []
-    return [label for field, label in catalog.QUOTE_REQUIRED[category].items() if args.get(field) in (None, "")] + price_safety.value_problems(args, category)
+    improper = ["an improper payment term (they asked for alcohol or similar): don't record it; say 'सर, प्लीज़ प्रोफेशनली बात कीजिए' "
+                "and ask for a normal rupee quote"] if any(isinstance(v, str) and _IMPROPER_RE.search(v) for v in args.values()) else []
+    return [label for field, label in catalog.QUOTE_REQUIRED[category].items() if args.get(field) in (None, "")] + price_safety.value_problems(args, category) + improper
+
+
+# Non-money "payments" a vendor might slip into a quote. Never saved as terms the family could approve.
+_IMPROPER_RE = re.compile(
+    r"\b(?:alcohol|liquor|whisk(?:e)?y|beer|rum|vodka|wine|daaru|daru|sharab|cigarettes?|ganja)\b|"
+    r"दारू|शराब|बियर|बीयर|व्हिस्की|विस्की|सिगरेट|ಮದ್ಯ|ಎಣ್ಣೆ ಬಾಟಲ್", re.I)
 
 
 def checked_quote(args: dict[str, Any], dialogue: list[dict[str, str]], brief: dict[str, Any], category: str,
@@ -1080,6 +1549,8 @@ async def drop_unspeakable(text: str, _text_type: Any) -> str:
 
 def normalize_quote(quote: dict[str, Any]) -> dict[str, Any]:
     """The model sometimes files transport under extra charges; move it so the rules see it."""
+    if quote.get("extras_at_actuals") is True and quote.get("extra_charges_amount") is None:
+        quote["extra_charges_amount"] = 0  # nothing fixed now; the rest is billed later at actual cost
     notes = (quote.get("extra_charges_notes") or "").lower()
     if quote.get("transport_charge") is None and quote.get("extra_charges_amount") and (
         "transport" in notes or "ट्रांसपोर्ट" in notes or "travel" in notes
@@ -1094,6 +1565,11 @@ def _text(message: dict[str, Any]) -> str:
     if isinstance(content, list):
         content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
     return content or ""
+
+
+def _is_empty_turn(message: Any) -> bool:
+    """The note pipecat adds when they spoke but the STT returned no words."""
+    return isinstance(message, dict) and message.get("role") == "developer" and message.get("content") in EMPTY_TURN_PROMPTS
 
 
 def _is_spoken_turn(message: Any) -> bool:
