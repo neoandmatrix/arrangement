@@ -1,5 +1,6 @@
 """Offline synthetic workflow rehearsal. This test is not a recorded or live Gnani voice demo."""
 
+from unittest.mock import patch
 import tempfile
 import unittest
 from datetime import timedelta
@@ -20,6 +21,8 @@ from confirmation_fixture import finish_confirmation
 from price_fixture import checked_quote
 
 
+@patch.object(backups, "STANDBY_CALLS", True)  # the standby-call flow, off by default since 2026-11-09
+@patch.object(workflow, "BACKUP_ONLY_ON_CANCEL", False)
 class DemoWalkthroughTest(unittest.IsolatedAsyncioTestCase):
     async def test_housewarming_quotes_confirmation_standby_failure_and_activation(self):
         original = store.DB_PATH

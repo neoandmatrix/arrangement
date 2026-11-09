@@ -366,11 +366,11 @@ def checkin_schedule(brief: dict[str, Any], category: str) -> list[tuple[str, st
 
 
 def assess_risk(
-    checkins: list[dict[str, Any]], brief: dict[str, Any], category: str
+    checkins: list[dict[str, Any]], brief: dict[str, Any], category: str, *, only_on_cancel: bool = True
 ) -> dict[str, str] | None:
     """Look at completed check-ins for a booked vendor. Returns an action when there's risk.
 
-    action 'activate_backup' hands the job to the standby vendor; 'warn' tells the family.
+    action 'activate_backup' (only when they cancel) calls the backup to take over; 'warn' tells the family.
     """
     done = [c for c in checkins if c['status'] in ('confirmed', 'delayed', 'cancelled', 'unsure', 'unreachable')]
     if not done:
@@ -381,29 +381,28 @@ def assess_risk(
     if last["status"] == "cancelled":
         return {"action": "activate_backup", "reason": "Vendor cancelled"}
 
+    # Owner's call (2026-11-09): only a cancellation hands the job to the backup. Everything else warns the
+    # family, who can still choose a replacement themselves. only_on_cancel=False restores the old triggers.
+    switch = "warn" if only_on_cancel else "activate_backup"
     unreachable_streak = 0
     for c in reversed(done):
         if c["status"] != "unreachable":
             break
         unreachable_streak += 1
     if unreachable_streak >= 2:
-        return {"action": "activate_backup", "reason": "Unreachable on two check-ins in a row"}
+        return {"action": switch, "reason": "Unreachable on two check-ins in a row"}
 
     if last['status'] in ('confirmed', 'delayed') and last.get('eta'):
         eta = datetime.fromisoformat(f"{arrive_by.date().isoformat()}T{last['eta']}")
         if eta < arrive_by - timedelta(hours=12):
             eta += timedelta(days=1)
         if eta > arrive_by:
-            return {
-                "action": "activate_backup",
-                "reason": f"ETA {last['eta']} is after the required arrival {arrive_by:%H:%M}",
-            }
+            return {"action": switch, "reason": f"ETA {last['eta']} is after the required arrival {arrive_by:%H:%M}"}
         if last['status'] == 'delayed':
             return {"action": "warn", "reason": f"Running late but should make it (ETA {last['eta']})"}
 
-    is_final = last["label"].startswith("Final")
-    if last["status"] == "unsure" and is_final:
-        return {"action": "activate_backup", "reason": "Not sure they can make it, on the final check"}
+    if last["status"] == "unsure" and last["label"].startswith("Final"):
+        return {"action": switch, "reason": "Not sure they can make it, on the final check"}
     if last["status"] in ("unsure", "unreachable"):
         return {"action": "warn", "reason": f"Check-in '{last['label']}': {last['status']}"}
     return None

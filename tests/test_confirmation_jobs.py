@@ -1,5 +1,7 @@
 """Serial, retryable confirmation jobs with fake call channels."""
 
+import backups
+from unittest.mock import patch
 import asyncio
 import tempfile
 import unittest
@@ -14,6 +16,8 @@ import workflow
 from price_fixture import checked_quote
 
 
+@patch.object(backups, "STANDBY_CALLS", True)  # the standby-call flow, off by default since 2026-11-09
+@patch.object(workflow, "BACKUP_ONLY_ON_CANCEL", False)
 class ConfirmationJobsTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

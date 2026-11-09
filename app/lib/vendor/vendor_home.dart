@@ -131,6 +131,7 @@ const _enquiryText = {
   'confirming': 'Confirming the family-approved booking terms',
   'confirmation_failed': 'Booking confirmation is still needed',
   'awaiting_changes': 'Changed terms are awaiting family review',
+  'backup_on_file': 'Kept as the family\'s backup · not booked; you\'ll get a call only if needed',
   'standby': 'On standby as backup',
   'standby_confirmed': 'Standby availability confirmed · not booked',
   'awaiting_backup_confirmation': 'Standby confirmation pending · not booked',

@@ -1,5 +1,6 @@
 """Selecting, securing and activating a backup. Standby consent is never a booked replacement."""
 
+import os
 from typing import Any
 
 import confirmation_rules
@@ -62,6 +63,36 @@ def request_standby(event_id: int, category: str) -> int | None:
     if backup['status'] not in confirmation_rules.BACKUP_RESERVED:
         return None
     return _request(event_id, category, 'standby')
+
+
+# Owner's call (2026-11-09): no standby call after booking by default. STANDBY_CALLS=1 restores it.
+STANDBY_CALLS = os.environ.get("STANDBY_CALLS", "0") == "1"
+
+
+def after_primary_confirmed(event_id: int, category: str) -> int | None:
+    """Keep the runner-up on file (default), or call them for standby consent (STANDBY_CALLS=1)."""
+    if STANDBY_CALLS:
+        return request_standby(event_id, category)
+    keep_on_file(event_id, category)
+    return None
+
+
+def keep_on_file(event_id: int, category: str) -> None:
+    """The runner-up stays our backup without a standby call; they are called only if the primary cancels.
+
+    Owner's call (2026-11-09): no "please stay available" call after booking. The backup's quote is kept and
+    the activation call (a real booking confirmation) is made only when the primary cancels.
+    """
+    primary, backup, parent, brief = _context(event_id, category)
+    if primary['status'] != 'active' or parent['status'] != 'confirmed':
+        raise ValueError('Confirm the primary booking before keeping a backup')
+    if backup['status'] not in confirmation_rules.BACKUP_RESERVED:
+        return
+    _quote(event_id, backup['vendor_id'], brief)
+    store.set_booking(event_id, category, 'backup', backup['vendor_id'], 'backup_on_file')
+    store.set_enquiry(event_id, backup['vendor_id'], category, 'backup_on_file')
+    store.add_alert(event_id, 'info', f"{store.vendor(backup['vendor_id'])['name']}: kept as the backup {category}. "
+                    "Not booked and not called; Bandobast calls them only if the booked vendor cancels.")
 
 
 def secured(event_id: int, category: str) -> bool:
@@ -177,7 +208,7 @@ def choose(event_id: int, category: str, vendor_id: str) -> int | None:
         store.set_confirmation(latest['id'], 'superseded', reason='Family changed backup selection')
     store.set_booking(event_id, category, 'backup', vendor_id, 'awaiting_backup_confirmation')
     if primary['status'] == 'active':
-        return request_standby(event_id, category)
+        return after_primary_confirmed(event_id, category)
     return begin_replacement(event_id, category, primary['vendor_id'], 'Family chose a replacement candidate')
 
 
@@ -186,7 +217,7 @@ def retry(event_id: int, category: str) -> int | None:
     if not primary:
         raise ValueError('No primary selection')
     if primary['status'] == 'active':
-        return request_standby(event_id, category)
+        return after_primary_confirmed(event_id, category)
     if primary['status'] in ('replacement_pending', 'needs_replacement'):
         return begin_replacement(event_id, category, primary['vendor_id'], 'Retrying backup activation')
     raise ValueError('The primary must be confirmed before standby confirmation')

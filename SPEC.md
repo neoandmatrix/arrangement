@@ -70,6 +70,8 @@ Date/time/venue changes are shown for family review, not applied to one vendor i
 of the function. The family can reject the change and retry original terms, or cancel the
 unconfirmed selection and choose another vendor.
 
+**Backup (changed 2026-11-09):** after the primary confirms, the runner-up is kept on file as the backup: not booked and not called. Only a cancellation by the primary switches to it, through the activation call below; a late arrival, missed check-ins or an unsure answer only warn the family. The standby call described next is off by default (`STANDBY_CALLS=1`). On the function day, check-in calls also ask the vendor to share their live location with the family, saying the family requested it; the answer is shown to the family.
+
 **Backup confirmation:** a selected runner-up is only a candidate until it agrees to standby
 availability on its quoted terms. After the primary confirms, Bandobast calls the backup. This
 is explicitly not a booking, and no advance is due. Standby failures or quote changes do not

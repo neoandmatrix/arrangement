@@ -132,9 +132,9 @@ def accept_answer(confirmation_id: int, call_id: str, index: int, text: str, *, 
     if record['role'] == 'primary':
         import backups
         try:
-            backups.request_standby(record['event_id'], record['category'])
+            backups.after_primary_confirmed(record['event_id'], record['category'])
         except ValueError:
-            store.add_alert(record['event_id'], 'warn', 'The primary is confirmed, but no backup has confirmed standby availability yet.')
+            store.add_alert(record['event_id'], 'warn', 'The primary is confirmed, but there is no backup vendor with a usable quote.')
     return True
 
 

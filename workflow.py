@@ -5,6 +5,7 @@ goes through here, so the rules in rules.py are applied the same way from every 
 """
 
 from typing import Any
+import os
 import uuid
 import re
 
@@ -15,6 +16,10 @@ import confirmation_rules
 import confirmations
 import backups
 import checkin_dispatch
+
+# Owner's call (2026-11-09): only a cancellation switches to the backup. BACKUP_ONLY_ON_CANCEL=0 restores the
+# old triggers (two missed check-ins, a late arrival time, unsure at the final check).
+BACKUP_ONLY_ON_CANCEL = os.environ.get("BACKUP_ONLY_ON_CANCEL", "1") == "1"
 
 
 def require_event() -> tuple[int, dict[str, Any]]:
@@ -124,7 +129,7 @@ def record_checkin(checkin_id: int, status: str, eta: str | None, notes: str | N
         for c in store.checkins(event_id)
         if c["category"] == category and c["vendor_id"] == checkin["vendor_id"]
     ]
-    risk = rules.assess_risk(history, brief, category)
+    risk = rules.assess_risk(history, brief, category, only_on_cancel=BACKUP_ONLY_ON_CANCEL)
     if risk:
         _act_on_risk(event_id, brief, category, checkin["vendor_id"], risk)
     return risk
@@ -189,7 +194,8 @@ def record_vendor_update(event_id: int, vendor_id: str, data: dict[str, Any], ve
     active = any(b["vendor_id"] == vendor_id and b["role"] == "primary" and b["status"] == "active"
                  for b in store.bookings(event_id))
     if active and kind in ("cancelled", "delayed"):
-        risk = rules.assess_risk([{"status": kind, "eta": data.get("eta"), "label": "Vendor callback"}], brief, vendor["category"])
+        risk = rules.assess_risk([{"status": kind, "eta": data.get("eta"), "label": "Vendor callback"}], brief, vendor["category"],
+                                 only_on_cancel=BACKUP_ONLY_ON_CANCEL)
         if risk:
             _act_on_risk(event_id, brief, vendor["category"], vendor_id, risk)
         if kind == "cancelled" and quote:

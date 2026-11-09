@@ -265,6 +265,29 @@ Call flow:
 """
 
 
+DAY_OF_LABELS = ("Morning", "Final")  # the check-in calls on the function day (rules.checkin_schedule)
+
+LOCATION_ASK = {
+    "hi-IN": "सर, फैमिली ने रिक्वेस्ट किया है, क्या आप अपनी लाइव लोकेशन फैमिली के साथ शेयर कर सकते हैं?",
+    "en-IN": "Sir, the family has requested this: could you share your live location with them?",
+}
+
+
+def is_day_of(label: str) -> bool:
+    return label.startswith(DAY_OF_LABELS)
+
+
+def _location_step(vendor: dict[str, Any], label: str) -> str:
+    """On the function day, ask them to share their live location: the family asked for it."""
+    if not is_day_of(label):
+        return ""
+    ask = LOCATION_ASK.get(vendor["language"])
+    say = f'say: "{ask}"' if ask else (f"say in {LANGUAGE_NAMES.get(vendor['language'], vendor['language'])}: "
+                                         f'"{LOCATION_ASK["en-IN"]}"')
+    return (f"3b. It's the function day: after the arrival time, tell them the family has asked for their live location, "
+            f"and {say} Record their answer as location_shared (true if they agree, false if not).\n")
+
+
 def checkin_prompt(*, vendor: dict[str, Any], brief: dict[str, Any], label: str, quote: dict[str, Any] | None) -> str:
     agreed = ""
     if quote:
@@ -286,7 +309,7 @@ Call flow:
    Times are venue-local IST. If they are busy and request a callback, ask when; end_call with callback_requested=true
    and callback_at as an ISO date/time in IST if supplied. Never invent a callback time or record a no-answer yourself.
 3. If they hesitate, gently ask whether there is any problem, so the family can plan.
-4. Call record_checkin with the status: confirmed, delayed (with the ETA as HH:MM in 24-hour time), cancelled, or unsure.
+{_location_step(vendor, label)}4. Call record_checkin with the status: confirmed, delayed (with the ETA as HH:MM in 24-hour time), cancelled, or unsure.
    If they give an arrival time, record it even if they say they are confirmed. Read back the result and arrival time
    and wait for a clear yes before saving confirmed; a vague or conditional answer is not confirmation.
 5. Thank them and call end_call.

@@ -350,6 +350,8 @@ RECORD_CHECKIN = FunctionSchema(
         "status": {"type": "string", "enum": ["confirmed", "delayed", "cancelled", "unsure"]},
         "eta": {"type": ["string", "null"], "description": "Arrival time HH:MM 24-hour, if given"},
         "notes": {"type": ["string", "null"]},
+        "location_shared": {"type": ["boolean", "null"],
+                            "description": "Function-day calls only: did they agree to share their live location with the family?"},
     },
     required=["status"],
 )
@@ -885,6 +887,14 @@ async def _run_conversation(
         if args.get("status") == "delayed" and not _valid_time(args.get("eta")):
             await reject(fn, ["the arrival time (ETA) as HH:MM"])
             return
+        checkin = store.checkin(cfg.checkin_id)
+        day_of = prompts.is_day_of(checkin["label"]) and args.get("status") in ("confirmed", "delayed")
+        if day_of and args.get("location_shared") is None and not outcome.get("location_asked"):
+            # The family asked for it: the function-day call doesn't end without asking.
+            outcome["location_asked"] = True
+            await reject(fn, ["their live location: tell them the family has asked, ask if they can share their live location "
+                              "with the family, then record location_shared"])
+            return
         try:
             risk = workflow.record_checkin(cfg.checkin_id, args['status'], args.get('eta'), args.get('notes'), attempt_id=cfg.checkin_attempt_id, call_id=cfg.call_id)
         except (KeyError, LookupError, ValueError) as error:
@@ -893,6 +903,11 @@ async def _run_conversation(
             await fn.llm.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
             return
         mark_recorded("record_checkin")
+        if day_of and args.get("location_shared") is not None:
+            name = store.vendor(cfg.vendor_id)["name"]
+            store.add_alert(checkin["event_id"], "info" if args["location_shared"] else "warn",
+                            f"{name} {'agreed to share their live location with you' if args['location_shared'] else 'did not agree to share their live location'}"
+                            " (you asked for it on the function day).")
         log.info(f"record_checkin {cfg.checkin_id}: {args} -> risk {risk}")
         # The vendor isn't told about a switch to the backup; that's for the family.
         await fn.result_callback({"ok": True})

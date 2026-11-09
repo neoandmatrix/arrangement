@@ -1,5 +1,7 @@
 """Actual confirmation tool/router handlers with synthetic speech and audio-delivery events."""
 
+import backups
+from unittest.mock import patch
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +54,8 @@ class TTS(Processor):
         return register
 
 
+@patch.object(backups, "STANDBY_CALLS", True)  # the standby-call flow, off by default since 2026-11-09
+@patch.object(workflow, "BACKUP_ONLY_ON_CANCEL", False)
 class ConfirmationConversationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
